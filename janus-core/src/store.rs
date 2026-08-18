@@ -402,6 +402,154 @@ pub fn present_count(conn: &Connection) -> Result<(i64, i64), String> {
     Ok((all, present))
 }
 
+#[derive(Debug, Clone)]
+pub struct ListFamily {
+    pub id: i64,
+    pub key: String,
+    pub name: Option<String>,
+    pub name_level: Option<String>,
+    pub kind: String,
+    pub params_total: Option<f64>,
+    pub params_active: Option<f64>,
+    pub quants: String,
+    pub bytes: i64,
+    pub roots: Vec<(String, bool)>,
+}
+
+pub fn family_list(conn: &Connection) -> Result<Vec<ListFamily>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT f.id, f.family_key, f.name, f.kind, f.params_total, f.params_active,
+               (SELECT e.level FROM evidence e WHERE e.subject_type='family' AND e.subject_id=f.id
+                AND e.field='name' ORDER BY e.id DESC LIMIT 1) AS name_level,
+               (SELECT COALESCE(SUM(fl.size),0)
+                  FROM files fl JOIN file_roles fr ON fr.file_id=fl.id
+                  LEFT JOIN model_variants v ON v.id=fr.variant_id
+                 WHERE v.family_id=f.id OR fr.family_id=f.id) AS bytes
+             FROM model_families f ORDER BY COALESCE(f.name, f.family_key)",
+        )
+        .map_err(to_err)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<f64>>(4)?,
+                r.get::<_, Option<f64>>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, i64>(7)?,
+            ))
+        })
+        .map_err(to_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_err)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for (id, key, name, kind, total, active, name_level, bytes) in rows {
+        let q: String = conn
+            .query_row(
+                "SELECT GROUP_CONCAT(DISTINCT v.quant) FROM model_variants v WHERE v.family_id=?1",
+                [id],
+                |r| r.get(0),
+            )
+            .map_err(to_err)?;
+        let mut roots: Vec<(String, bool)> = Vec::new();
+        if let Ok(mut rs) = conn.prepare(
+            "SELECT DISTINCT sr.name, COALESCE(sr.present,0)
+               FROM storage_roots sr
+               JOIN files fl ON fl.root_id=sr.id
+               JOIN file_roles fr ON fr.file_id=fl.id
+               LEFT JOIN model_variants v ON v.id=fr.variant_id
+              WHERE v.family_id=?1 OR fr.family_id=?1
+              ORDER BY sr.name",
+        ) {
+            let it = rs
+                .query_map([id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? == 1)))
+                .map_err(to_err)?;
+            for r in it.flatten() {
+                roots.push(r);
+            }
+        }
+        out.push(ListFamily {
+            id,
+            key,
+            name,
+            name_level,
+            kind,
+            params_total: total,
+            params_active: active,
+            quants: q,
+            bytes,
+            roots,
+        });
+    }
+    Ok(out)
+}
+
+pub fn family_find_id(conn: &Connection, name_or_key: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT id FROM model_families WHERE family_key=?1 OR name=?1 LIMIT 1",
+        [name_or_key],
+        |r| r.get(0),
+    )
+    .ok()
+}
+
+#[derive(Debug, Clone)]
+pub struct ShowVariant {
+    pub quant: String,
+    pub format: String,
+    pub subflavour: String,
+    pub publisher: String,
+    pub bytes: i64,
+    pub root: String,
+    pub present: bool,
+    pub last_scan_at: Option<i64>,
+}
+
+pub fn family_variants(conn: &Connection, family_id: i64) -> Result<Vec<ShowVariant>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT v.quant, v.format, v.subflavour, v.publisher,
+               (SELECT COALESCE(SUM(fl.size),0)
+                  FROM files fl JOIN file_roles fr ON fr.file_id=fl.id
+                 WHERE fr.variant_id=v.id) AS bytes,
+               (SELECT sr.name FROM storage_roots sr
+                 JOIN files fl ON fl.root_id=sr.id
+                 JOIN file_roles fr ON fr.file_id=fl.id
+                WHERE fr.variant_id=v.id LIMIT 1) AS root,
+               (SELECT COALESCE(sr.present,0) FROM storage_roots sr
+                 JOIN files fl ON fl.root_id=sr.id
+                 JOIN file_roles fr ON fr.file_id=fl.id
+                WHERE fr.variant_id=v.id LIMIT 1) AS present,
+               (SELECT MAX(fl.mtime) FROM file_roles fr JOIN files fl ON fl.id=fr.file_id
+                WHERE fr.variant_id=v.id) AS last_scan_at
+             FROM model_variants v WHERE v.family_id=?1 ORDER BY v.quant",
+        )
+        .map_err(to_err)?;
+    let rows = stmt
+        .query_map([family_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?, r.get::<_, i64>(4)?, r.get::<_, Option<String>>(5)?, r.get::<_, i64>(6)?, r.get::<_, Option<i64>>(7)?))
+        })
+        .map_err(to_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_err)?;
+    Ok(rows
+        .into_iter()
+        .map(|(quant, format, subflavour, publisher, bytes, root, present, last_scan_at)| ShowVariant {
+            quant,
+            format,
+            subflavour,
+            publisher,
+            bytes,
+            root: root.unwrap_or_default(),
+            present: present == 1,
+            last_scan_at,
+        })
+        .collect())
+}
+
 pub fn home_counts(conn: &Connection) -> Result<(i64, i64, i64, i64, i64), String> {
     let families: i64 = conn.query_row("SELECT COUNT(*) FROM model_families", [], |r| r.get(0)).map_err(to_err)?;
     let families_inferred: i64 = conn
