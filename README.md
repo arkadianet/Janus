@@ -7,9 +7,10 @@ face that can watch providers and fetch what you are actually missing.
   are unplugged. Group by family / revision / variant. Tell the truth about
   what is known vs guessed.
 - **Radar + fetch** (Sonarr): wanted / missing / cutoff against a quality
-  profile. Never download bytes the catalogue already has.
+  profile. By default, never download bytes the catalogue already has;
+  `--force` may redownload an already-owned blob.
 
-Janus is not a runtime, chat UI, or Hub mirror.
+Janus is not a runtime, chat UI, Hub mirror, or torrent/`*arr` indexer stack.
 
 See [DESIGN.md](DESIGN.md) for the architecture. Copy [example.env](example.env)
 to `.env` if you need a Hugging Face token for gated fetches; Janus never

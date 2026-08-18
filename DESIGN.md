@@ -90,9 +90,9 @@ Not a personal catalogue of existing junk.
 - **MeshVault / Modelist / STLHub** — local SQLite, index-in-place, hash
   dedupe, browser-first hoard.
 - **Latent-Model-Organizer** — safe, undoable moves (reuse later, not MVP).
-- **Sonarr / Radarr / the *arr suite** — monitor + quality profile + wanted /
+- **Sonarr / Radarr / the `*arr` suite** — monitor + quality profile + wanted /
   missing / cutoff + fetch into a library root. This is the outward face.
-  Janus is *partly* an *arr: the mental model, not the usenet/torrent stack.
+  Janus is *partly* an `*arr`: the mental model, not the usenet/torrent stack.
 
 ### What Janus uniquely combines
 1. Model-aware identity on **arbitrary existing folders**, with truth levels.
@@ -129,7 +129,7 @@ Fetch is a **hook on a hole in the catalogue**, not how you discover Janus.
 
 Always ask: *which layer is this fact attached to?*
 
-```
+```text
 FAMILY       Qwen3-Coder-30B                         the show
   REVISION   hf:Qwen/Qwen3-Coder@e3f2a1c | local:…   the season
     VARIANT  gguf · Q4_K_M · instruct · bartowski    the episode / quality
@@ -147,9 +147,9 @@ vocabulary.
 | **File (instance)** | One path on one root. Present or missing with the root. This *is* the copy. | `(root_id, rel_path)` |
 | **Role** | Why this file belongs to a model: `weights`, `shard`, `tokenizer`, `config`, `mmproj`, `lora`, `sidecar`. | on the file ↔ variant (or family) link |
 | **Variant** | A distinct representation people collect. | family + revision + format + quant + subflavour + **publisher** |
-| **Revision** | A version: HF commit/tag, or synthetic `local:<blake3-prefix>` when unknown. | per family |
+| **Revision** | A version: HF commit/tag, or synthetic `local:<blake3>` (full digest) when unknown. Short prefixes are display-only; on collision expand the prefix. Identity is always the full digest. | unique per family (`rev_kind` + canonical `rev_label`) |
 | **Family** | The logical model. | `family_key` (see §8) |
-| **Companion** | Tokenizer / mmproj / projector / chat template sitting next to weights. Same family (or variant), different role — not their own family unless unidentified. |
+| **Companion** | Tokenizer / mmproj / projector / chat template sitting next to weights. Same family (or variant), different role — not their own family unless unidentified. | `file_roles` row on a family or variant |
 | **Provenance** | Immutable event: downloaded, copied, seen-in-Ollama, imported, user-named. | attached to file, variant, or family |
 | **Enrichment** | External payload, stored separately, level=`external`. | never merged into `known` |
 | **Monitor** | User intent: watch this family (or variant) against a quality profile. | radar input |
@@ -196,16 +196,21 @@ meta(k TEXT PRIMARY KEY, v TEXT);          -- schema_version, etc.
 storage_roots(
   id INTEGER PRIMARY KEY,
   name TEXT,
-  path TEXT UNIQUE,                        -- canonical absolute
-  kind TEXT,                               -- internal | nas | removable | discovery | fetch
-  mode TEXT DEFAULT 'catalogue',           -- catalogue | fetch
+  path TEXT NOT NULL UNIQUE,               -- canonical absolute
+  kind TEXT NOT NULL,                      -- internal | nas | removable | discovery | fetch
+  mode TEXT NOT NULL DEFAULT 'catalogue',  -- catalogue | fetch
   mount_id TEXT,                           -- volume UUID / serial; NOT st_dev
   present INTEGER,
   last_present_check INTEGER,
   last_scan_at INTEGER,
   cold INTEGER DEFAULT 0,
-  writable INTEGER DEFAULT 0               -- 1 only for fetch root
+  writable INTEGER NOT NULL DEFAULT 0,     -- 1 only for the single fetch root
+  CHECK (
+    (kind = 'fetch' AND mode = 'fetch' AND writable = 1) OR
+    (kind != 'fetch' AND mode = 'catalogue' AND writable = 0)
+  )
 );
+-- UNIQUE INDEX storage_roots_one_fetch ON storage_roots(kind) WHERE kind = 'fetch';
 
 blobs(
   id INTEGER PRIMARY KEY,
@@ -218,10 +223,11 @@ blobs(
 
 files(
   id INTEGER PRIMARY KEY,
-  root_id INTEGER REFERENCES storage_roots,
-  rel_path TEXT,
+  root_id INTEGER NOT NULL REFERENCES storage_roots,
+  rel_path TEXT NOT NULL,
   size INTEGER, mtime INTEGER, ctime INTEGER,
-  dev INTEGER, ino INTEGER,                -- hardlink identity
+  dev INTEGER, ino INTEGER,                -- last-seen; group with root.mount_id
+  change_gen TEXT,                         -- file_id / USN / FS generation
   is_symlink INTEGER, symlink_target TEXT,
   blob_id INTEGER REFERENCES blobs,
   hash_state TEXT DEFAULT 'none',          -- none|partial|full
@@ -251,21 +257,22 @@ family_aliases(
 
 model_revisions(
   id INTEGER PRIMARY KEY,
-  family_id INTEGER REFERENCES model_families,
-  rev_kind TEXT,                           -- commit|tag|local
-  rev_label TEXT,
-  source_hint TEXT
+  family_id INTEGER NOT NULL REFERENCES model_families,
+  rev_kind TEXT NOT NULL,                  -- commit|tag|local
+  rev_label TEXT NOT NULL,                 -- full commit / tag / local:<blake3>
+  source_hint TEXT,
+  UNIQUE(family_id, rev_kind, rev_label)
 );
 
 model_variants(
   id INTEGER PRIMARY KEY,
-  family_id INTEGER REFERENCES model_families,
-  revision_id INTEGER REFERENCES model_revisions,
-  quant TEXT,                              -- normalised
+  family_id INTEGER NOT NULL REFERENCES model_families,
+  revision_id INTEGER NOT NULL REFERENCES model_revisions,
+  quant TEXT NOT NULL DEFAULT 'unknown',   -- normalised; never NULL
   quant_raw TEXT,                          -- GGUF file_type or filename tag
-  format TEXT,                             -- gguf|safetensors|onnx|mlx|…
-  subflavour TEXT,                         -- base|instruct|chat|thinking|coder|finetune|merge|lora
-  publisher TEXT,                          -- bartowski|official|local|…
+  format TEXT NOT NULL DEFAULT 'unknown',
+  subflavour TEXT NOT NULL DEFAULT 'unknown',
+  publisher TEXT NOT NULL DEFAULT 'unknown',
   UNIQUE(family_id, revision_id, format, quant, subflavour, publisher)
 );
 
@@ -313,31 +320,45 @@ quality_profiles(
 
 monitors(
   id INTEGER PRIMARY KEY,
-  family_id INTEGER REFERENCES model_families,
-  variant_id INTEGER,                      -- nullable = whole family
-  profile_id INTEGER REFERENCES quality_profiles,
+  family_id INTEGER NOT NULL REFERENCES model_families,
+  variant_id INTEGER REFERENCES model_variants,  -- nullable = whole family
+  profile_id INTEGER NOT NULL REFERENCES quality_profiles,
   enabled INTEGER DEFAULT 1
+  -- app: if variant_id IS NOT NULL then variant.family_id = monitors.family_id
 );
 
 wanted_items(
   id INTEGER PRIMARY KEY,
   monitor_id INTEGER REFERENCES monitors,
-  provider TEXT,
-  repo TEXT, revision TEXT, filename TEXT,
-  size INTEGER, sha256 TEXT,
+  remote_key TEXT NOT NULL UNIQUE,         -- provider|repo|revision|filename
+  provider TEXT NOT NULL,
+  repo TEXT NOT NULL, revision TEXT NOT NULL, filename TEXT NOT NULL,
+  size INTEGER,
+  sha256 TEXT,                             -- required non-null before fetch/install
   status TEXT,                             -- open|satisfied|fetching|fetched|skipped_have_bytes|dismissed
-  local_blob_id INTEGER,                   -- set when catalogue already has sha256
+  local_blob_id INTEGER,                   -- set when catalogue already has verified sha256
   local_root_id INTEGER                    -- where those bytes live (may be offline)
 );
 
 fetch_tasks(
   id INTEGER PRIMARY KEY,
-  wanted_id INTEGER REFERENCES wanted_items,
-  dest_root_id INTEGER REFERENCES storage_roots,
-  dest_rel_path TEXT,
+  wanted_id INTEGER NOT NULL REFERENCES wanted_items,
+  dest_root_id INTEGER NOT NULL REFERENCES storage_roots,
+  dest_rel_path TEXT NOT NULL,
   bytes_done INTEGER, bytes_total INTEGER,
   state TEXT,                              -- queued|running|paused|done|error
   error TEXT
+);
+-- UNIQUE INDEX fetch_tasks_one_active ON fetch_tasks(wanted_id)
+--   WHERE state IN ('queued','running','paused');
+
+declined_merges(
+  family_a_key TEXT NOT NULL,
+  family_b_key TEXT NOT NULL,
+  algo_version TEXT NOT NULL,              -- family_key algorithm version
+  declined_at INTEGER,
+  PRIMARY KEY (family_a_key, family_b_key, algo_version),
+  CHECK (family_a_key < family_b_key)
 );
 
 tags(id INTEGER PRIMARY KEY, name TEXT UNIQUE);
@@ -353,11 +374,28 @@ scan_runs(id INTEGER PRIMARY KEY, root_id INTEGER,
 -- FTS5 over name + aliases + arch + kind + tags + repo; maintained in the writer.
 ```
 
+Every connection runs `PRAGMA foreign_keys = ON`. `REFERENCES` alone does
+nothing in SQLite.
+
 Indexes: `(root_id)`, `(blob_id)`, `(blake3)`, `(sha256)`, `(family_id)`,
 `(kind)`, `(size)`, `(params_total)`. Filtering is SQL; search is FTS5.
 
-User aliases, declined merges, and manual names are the irreplaceable rows.
-`export` must include them. A file-list dump is not a backup.
+**Root create/update validation** (not expressible as a single CHECK):
+
+- At most one `kind='fetch'` row (partial unique index above).
+- `kind`, `mode`, and `writable` stay consistent with the CHECK.
+- Fetch and catalogue paths must not be ancestors or descendants of each
+  other. Two catalogue roots may coexist if neither path contains the other.
+
+Radar upserts `wanted_items` on `remote_key`. A sweep refreshes an existing
+row; it does not insert a duplicate. Fetch requires `sha256 IS NOT NULL`;
+otherwise the task stays staged, `state='error'`, and no bytes are
+installed. At most one active `fetch_tasks` row per `wanted_id`.
+
+`family_aliases` is alias relationships only. Declined merge pairs live in
+`declined_merges`, keyed by the canonical family-key pair and algorithm
+version. `export` / `import` include `family_aliases`, `declined_merges`,
+and other user decisions. A file-list dump is not a backup.
 
 ---
 
@@ -365,9 +403,9 @@ User aliases, declined merges, and manual names are the irreplaceable rows.
 
 **Janus state (platform dirs, not hardcoded `~/.local/share`):**
 
-```
+```text
 $data/janus/          janus.db, logs/
-$cache/janus/         http/ (enrichment + radar listings), tmp/ (hash + fetch parts)
+$cache/janus/         http/ (enrichment + radar listings), tmp/ (hash only)
 $config/janus/        config.toml
 ```
 
@@ -396,8 +434,11 @@ specified as *later*. It is not how you use Janus. Do not leak it into v1.
 
 **Root identity.** `mount_id` = filesystem UUID (Linux), volume serial
 (Windows), Disk Arbitration UUID (macOS). `st_dev` is **not** the id — it
-changes across remounts, USB ports, and containers. Path is a hint; `mount_id`
-is the root.
+changes across remounts, USB ports, and containers. Path is a hint;
+`mount_id` is the root. If the filesystem has no stable `mount_id`, reject
+the add unless a validated `.janus-root` marker is already present or the
+user explicitly re-registers that root. Never associate a root by path
+alone.
 
 **Presence is a property of the root.** When a root is gone: `present=0`.
 Do **not** update every file row to `missing` (write storm, dirty diffs).
@@ -405,18 +446,22 @@ Files inherit presence. Hysteresis: N consecutive probe failures before
 `present=0` so a NFS blip is not a library funeral. `cold` roots are not
 polled; rescan on explicit mount or `janus scan`.
 
-**Reconcile on return:** match `(rel_path, size, mtime, ino)` then reattach
-blob. History is append-only (`scan_runs`); a scan does not delete provenance.
+**Reconcile on return:** match `(rel_path, size, mtime, ino)` as a *candidate*
+only. Reattach a stored blob only after the walk-gate rules in §7. History
+is append-only (`scan_runs`); a scan does not delete provenance.
 
 **Symlinks / hardlinks.** Symlink: store target, do not follow out of the
-root. Hardlinks: same `(dev,ino)` → same allocation; reclaimable math uses
-unique inodes per blob, not `size × (N−1)` file rows. Ollama blob hardlinks
+root. Hardlinks: same `(mount_id, dev, ino)` → same allocation. Reclaimable
+math groups by that triple (or, if the root is present, by the current
+mount's `dev+ino`); never `(dev, ino)` alone across offline or remounted
+roots. File-row counts must not use `size × (N−1)`. Ollama blob hardlinks
 are detected this way — no double-counting disk.
 
 **Partials.** `.part`, `.part_file`, `.aria2`, `.!qB`, `.crdownload`, and
 fetch staging files → `parse_state='partial'`. Shown as incomplete, never as
-models. Fetch uses `$cache/janus/tmp/fetch/` then atomic rename into the fetch
-root.
+models. Fetch stages the verified temp file **inside the fetch root**
+(`.janus-partial/`) then fsyncs and renames; cache is not a rename source
+(§12).
 
 **Windows cloud placeholders (OneDrive / iCloud).** Skip unhydrated reparse
 points. A naïve walk that hydrates 4 TB is a product defect, not a Low risk.
@@ -430,18 +475,27 @@ points. A naïve walk that hydrates 4 TB is a product defect, not a Low risk.
 Full-file BLAKE3 *and* a later SHA-256 for gguf-index is how first-scan dies
 on a NAS. Compute both in one read.
 
-1. **Walk gate** — `(size, mtime, ino)` vs last scan. Unchanged → skip.
+1. **Walk gate** — `(size, mtime, ino)` vs last scan is a skip *candidate*
+   only. It is not proof the bytes are unchanged (in-place overwrite can
+   restore timestamps). Reuse a stored BLAKE3/SHA-256 only if a
+   change-generation token still matches (volume + file_id / USN / FS
+   generation where the OS provides one) **or** a partial-hash confirm
+   matches. Otherwise re-enter the hash pipeline. Stale digests must not
+   satisfy `have_bytes`.
 2. **Header parse** — identity without reading weights (mmap / bounded read).
 3. **Partial gate** — xxHash64 of first+last 64 KiB when size collides with
    an existing blob. Cheap reject.
 4. **Full pass** — stream once → BLAKE3 + SHA-256 onto `blobs`.
 5. **Reuse known digests** — Ollama blob names are `sha256-…`; HF cache has
-   LFS sha256. After a size check, trust them; do not rehash the Ollama store
-   on first scan.
+   LFS sha256. After a size check, treat these as a trusted provider digest
+   (`hash_state='full'`). Do not rehash the Ollama store on first scan.
 6. **Resume** — `jobs` per file, not only per root.
 
 `--quick` = walk + header parse, no full hash. Enough to group and browse.
-Duplicates and gguf-index identify need the full pass (or a reused digest).
+Files without a full pass or a reused trusted provider SHA-256 stay
+`hash_state='none'` (unverified). They **cannot** satisfy `have_bytes`,
+`skipped_have_bytes`, or fetch-suppression. Duplicates, radar ownership, and
+gguf-index identify need the full pass or a trusted provider digest.
 
 First-scan I/O on 4–10 TB is a **High** risk. Background, I/O-nice, per-root
 jobs, user-visible "hashed 12 / 400 files (800 GB left)".
@@ -451,7 +505,7 @@ jobs, user-visible "hashed 12 / 400 files (800 GB left)".
 1. **Byte-exact** — same BLAKE3. Certain. Ollama ↔ LM Studio ↔ HF cache copies
    are the common case.
 2. **Same bytes, different path** — one blob, N files. Reclaimable = unique
-   extra *inodes*, not extra rows.
+   extra `(mount_id, dev, ino)` allocations, not extra rows.
 3. **Same model, different representation** — variants. Never dedup.
 4. **Near-dup** (re-packed weights) — post-v1 tensor signatures. Suggest only.
 
@@ -493,7 +547,7 @@ subflavour, publisher (kept, not stripped). Content wins; filenames fill gaps.
 
 The three files in the brief must become one family:
 
-```
+```text
 qwen3-coder-q4.gguf
 Qwen3-Coder-30B-Q5_K_M.gguf
 Qwen3-Coder-30B-Q8.gguf
@@ -507,17 +561,22 @@ Algorithm (golden-tested; changing it is a migration):
 2. Parse filename (`inferred`): tokens for name, params, quant, subflavour,
    publisher.
 3. **Display name** prefers basename, then name, then filename stem with
-   quant/publisher tokens stripped. Params class from tensors only as a
-   *guard rail* (MoE / vision towers must not invent "30B" blindly).
-4. `family_key = slug(display_name) + "|" + arch + "|" + params_bucket`
-   where `params_bucket` is a coarse bin (`7-8B`, `27-35B`, `unknown`) so
-   Qwen3-30B-A3B and Qwen3-32B do not collapse, and Q4/Q5/Q8 of the same
-   basename do.
-5. Variant = `(format, quant, subflavour, publisher)` under a revision
-   (`hf:…@sha` if known, else `local:<blake3-8>`).
-6. **No silent merges.** Same `family_key` from `known` fields may attach.
-   Anything that only agrees on inferred tokens goes to a merge-suggestion
-   queue. User merge/rename writes `family_aliases` and is forever respected.
+   quant/publisher tokens stripped. Filename params tags never invent a
+   `known` parameter identity (MoE / vision towers).
+4. `params_identity` from *known* total and active counts, rounded to a
+   stable precision (`t32.5|a3.0`). If either count is unknown, that half
+   is `unk`. Coarse bins (`27-35B`) are **not** part of the key — they
+   would merge Qwen3-30B-A3B with Qwen3-32B.
+5. `family_key = slug(display_name) + "|" + arch + "|" + params_identity`.
+   Q4/Q5/Q8 of the same basename and the same known params stay one family.
+   Same slug+arch but different known `params_identity` → different keys
+   and a merge suggestion, never a silent attach.
+6. Variant = `(format, quant, subflavour, publisher)` under a revision
+   (`hf:…@sha` if known, else `local:<full-blake3>`).
+7. **No silent merges.** Same `family_key` from `known` fields may attach.
+   Inferred-only agreement, or same key with disagreeing known params, goes
+   to the merge-suggestion queue. User merge/rename writes `family_aliases`.
+   User decline writes `declined_merges` and survives export/import.
 
 Hard cases that must have fixtures before this ships:
 
@@ -578,8 +637,9 @@ The hoarder case (SSD1 + SSD2 + NAS + drawer) is a design input, not an edge.
 - A family with copies on four drives is **one family, four files**. Offline
   drawer → family still browsable: "present on SSD1; drawer-drive last seen
   Tuesday."
-- Search and radar treat offline copies as **owned**. Reveal-in-file-manager
-  is the only thing that requires `present=1`.
+- Search and radar treat offline copies as **owned** only when the blob has
+  a verified SHA-256 (full pass or trusted provider digest). Reveal-in-file-
+  manager is the only thing that requires `present=1`.
 - Watch (`notify`) on a 15 TB NFS export is unreliable. v1 is poll + explicit
   scan + mount events. A live watcher is later, optional.
 
@@ -609,14 +669,17 @@ max_bytes = "40GB"
 exclude_name = ["i1", "-IQ"]           # inferred filename tokens
 ```
 
-Cutoff is the *arr idea: have Q3 → still wanted; have Q4_K_M → satisfied even
-if Q8 exists, unless the user raises the cutoff.
+Cutoff is the `*arr` idea: have Q3 → still wanted; have Q4_K_M → satisfied even
+if Q8 exists, unless the user raises the cutoff. Cutoff is evaluated **per
+revision** (see sweep). An older revision that already meets cutoff does not
+suppress a newly listed revision.
 
 ### Monitor
 
 A monitor is `(family | variant) + profile`. You can monitor a family you
 already own ("tell me when a new revision or a missing acceptable quant
-appears") or pin a specific hole ("this family's Q5_K_M").
+appears") or pin a specific hole ("this family's Q5_K_M"). If `variant_id`
+is set, it must belong to `family_id`; reject the monitor otherwise.
 
 You do not have to monitor everything. Unmonitored families still catalogue
 and still show a manual "what's on HF" action.
@@ -627,14 +690,23 @@ For each enabled monitor:
 
 1. Resolve a remote identity (HF repo from provenance / enrichment / user).
 2. AvailabilityProvider lists files (name, size, sha256) — cached, ETag.
-3. For each remote file that matches the profile:
-   - If `sha256` matches a local blob → `skipped_have_bytes`, record which
-     root (may be offline). **This is the Janus rule: never fetch bytes the
-     catalogue already has.**
-   - Else if a local variant already meets cutoff (same format/quant/publisher
-     rules, even if sha256 differs — different converter) → satisfied, unless
-     the user asked for that exact publisher.
-   - Else → `wanted_items` row, status `open`.
+3. Keep files that match format, quant, size, and `exclude_name`.
+4. **Publisher selection.** If `publishers` is non-empty, take the
+   highest-preference publisher that has at least one eligible file. Do not
+   open a wanted row for every publisher. Empty list = any publisher.
+5. **Revision scope.** Group remaining files by remote revision. Cutoff
+   satisfaction and `have_bytes` apply only inside that revision. A local
+   file from an older revision cannot mark a newer revision satisfied.
+6. For each selected remote file (after 4–5), upsert `wanted_items` on
+   `remote_key`:
+   - No verified local SHA-256 (quick-scan / unverified) → not ownership.
+   - Verified `sha256` matches a local blob → `skipped_have_bytes`, record
+     which root (may be offline). **Never fetch bytes the catalogue already
+     has**, unless `--force`.
+   - Else if a local variant in *this revision* already meets cutoff →
+     `satisfied`.
+   - Else → `open`. Missing `sha256` on the listing may stay `open` for
+     display; fetch/install is refused until a digest exists (§12).
 
 Radar is read-only. It does not download. It may run on a timer in the daemon
 or via `janus radar`.
@@ -652,24 +724,49 @@ or via `janus radar`.
 
 Fetch is Radarr grabbing *one release you already decided you want*.
 
-```
-wanted item (open) → confirm → fetch_task → $cache/tmp/fetch/*.part
-  → checksum (sha256 from listing) → atomic rename into fetch root
+```text
+wanted item (open, sha256 present)
+  → confirm → fetch_task (dest_root_id = the fetch root)
+  → validate dest_rel_path (below)
+  → reconcile dest if it already exists (below)
+  → stage in <fetch-root>/.janus-partial/<wanted_id>.part
+  → checksum against wanted_items.sha256
+  → fsync + rename into dest_rel_path (same filesystem)
   → same ingest as scan (parse, hash, group, provenance=downloaded_from)
 ```
+
+Staging lives **inside the fetch root** so rename cannot cross filesystems.
+Do not stage in `$cache` and promise an atomic move onto another volume.
+
+**`dest_rel_path` (before any write).** Reject absolute paths, `..`
+components, Windows drive letters, UNC (`\\`), and a dest whose resolved
+parent is a symlink. Resolve the candidate under the fetch root and require
+the result to stay inside that root. Apply this to provider filenames and
+CLI `--file` values.
+
+**Fail closed on digest.** If `wanted_items.sha256` is null, do not fetch or
+install. Leave/create the task `state='error'`, wanted status stays `open`
+(or `error`), no bytes land in the fetch root.
+
+**Reconcile on restart/retry.** If `dest_rel_path` already exists: verify
+size + SHA-256 against the wanted item. Match → treat as already fetched;
+transactionally set `fetch_tasks.state='done'` and `wanted_items.status=
+'fetched'`. Missing or checksum mismatch → do not overwrite; fail the task
+and leave the stray file for `doctor`.
 
 **Rules**
 
 1. Destination is the fetch root only. No writes to catalogue or discovery
-   roots.
-2. Refuse if a blob with that sha256 already exists, including offline —
-   surface "owned on drawer-drive" and require `--force` to duplicate.
-3. Resume via HTTP Range; `.part` files are `partial` in the catalogue if
-   they are visible, but staging stays in cache until verify passes.
+   roots. `dest_root_id` is required and must be that root.
+2. Refuse if a *verified* blob with that sha256 already exists, including
+   offline — surface "owned on drawer-drive" and require `--force` to
+   duplicate. Unverified / `--quick` files do not suppress fetch.
+3. Resume via HTTP Range into the in-root staging file.
 4. Gated repos: optional `HF_TOKEN` from env / config. Catalogue never needs
    it.
 5. One writer owns fetch_tasks (the daemon if running). CLI `janus fetch`
-   either calls the daemon or takes the write lock.
+   either calls the daemon or takes the write lock. At most one active task
+   per `wanted_id`.
 6. After success the file is a normal catalogue row. Radar marks the wanted
    item `fetched`. There is no second "import" step.
 
@@ -729,6 +826,12 @@ janus daemon [--api 127.0.0.1:4321]    # writer + API + UI; optional
 janus status | doctor | export | import | completions
 ```
 
+`--api` accepts loopback only by default (`127.0.0.1`, `::1`, `localhost`).
+Reject `0.0.0.0`, `::`, and any non-loopback host: there is no auth and no
+transport protection. Binding off-loopback requires an explicit opt-in that
+enables authentication, TLS (or equivalent), and request-origin controls
+together. The flag's default remains `127.0.0.1:4321`.
+
 `scan` is how existing files enter. `fetch` is how new remote files enter.
 There is no `import` of a random path that isn't a root, and no `/ingest`
 API that is a disguised downloader.
@@ -743,7 +846,7 @@ Local web UI, bundled, served by `janus daemon` at `http://127.0.0.1:4321`.
 Cross-platform without Electron. Tauri (tray, native "reveal in Finder") is
 later. The web app stays the interface.
 
-```
+```text
 Home         counts with truth split; TB; reclaimable (report); unknown;
              offline roots; open wanted (if any). Not a download queue.
 Library      families; filters; variant ladder as the hero.
@@ -752,7 +855,7 @@ Model        identity + truth badges; instances per root; provenance;
              only on an open wanted item.
 Radar        monitored families; last sweep; open / have-offline / fetched.
              Confirm fetch. No trending grid.
-Wanted       the *arr tab. Offline-owns-it is a first-class row, not missing.
+Wanted       the `*arr` tab. Offline-owns-it is a first-class row, not missing.
 Storage      treemap by root → family; dup report.
 Unknown      identify inbox.
 Search       Cmd/Ctrl-K; chips: quant:, params:, offline, wanted, have-bytes.
@@ -765,7 +868,9 @@ Fetch progress is a job row (poll or SSE). The API is
 
 `/api/v1/{roots,models,files,storage,dups,search,jobs,radar,wanted,fetch}`
 
-localhost only by default.
+Loopback bind only by default (`127.0.0.1` / `::1`). Wildcard and LAN binds
+are rejected unless auth + transport + origin controls are all enabled
+(§13).
 
 ---
 
@@ -817,7 +922,8 @@ designed now so it does not land as a bolted queue later.
 6. FTS5 + filters; CLI `list/search/show/storage`.
 7. Unknown + `identify` (local; optional sha256 lookup opt-in).
 8. Provenance for observed files; discovery sources read-only.
-9. Export/import of db essentials (roots, blobs, aliases, user decisions).
+9. Export/import of db essentials (roots, blobs, `family_aliases`,
+   `declined_merges`, other user decisions).
 
 ### Phase B — daemon + UI
 
