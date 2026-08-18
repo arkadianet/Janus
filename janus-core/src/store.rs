@@ -224,12 +224,12 @@ pub fn file_upsert(
 ) -> Result<i64, String> {
     let _updated = if symlink_target.is_some() {
         conn.execute(
-            "UPDATE files SET size=?1,mtime=?2,ctime=?3,dev=?4,ino=?5,is_symlink=1,symlink_target=?11,blob_id=?6,hash_state=?7,parse_state=?8,parse_error=?9 WHERE root_id=?10 AND rel_path=?12",
+            "UPDATE files SET size=?1,mtime=?2,ctime=?3,dev=?4,ino=?5,is_symlink=1,symlink_target=?11,blob_id=?6,hash_state=?7,parse_state=?8,parse_error=?9,state='present' WHERE root_id=?10 AND rel_path=?12",
             params![size, mtime, ctime, dev, ino, blob_id, hash_state, parse_state, parse_error, root_id, symlink_target, rel],
         )
     } else {
         conn.execute(
-            "UPDATE files SET size=?1,mtime=?2,ctime=?3,dev=?4,ino=?5,is_symlink=?6,blob_id=?7,hash_state=?8,parse_state=?9,parse_error=?10 WHERE root_id=?11 AND rel_path=?12",
+            "UPDATE files SET size=?1,mtime=?2,ctime=?3,dev=?4,ino=?5,is_symlink=?6,blob_id=?7,hash_state=?8,parse_state=?9,parse_error=?10,state='present' WHERE root_id=?11 AND rel_path=?12",
             params![size, mtime, ctime, dev, ino, !regular as i64, blob_id, hash_state, parse_state, parse_error, root_id, rel],
         )
     }
@@ -252,7 +252,7 @@ pub fn file_upsert(
             .map_err(to_err)?);
     }
     conn.execute(
-        "INSERT INTO files (root_id, rel_path, size, mtime, ctime, dev, ino, is_symlink, symlink_target, blob_id, hash_state, parse_state, parse_error) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        "INSERT INTO files (root_id, rel_path, size, mtime, ctime, dev, ino, is_symlink, symlink_target, blob_id, hash_state, parse_state, parse_error, state) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'present')",
         params![root_id, rel, size, mtime, ctime, dev, ino, 0, symlink_target, blob_id, hash_state, parse_state, parse_error],
     )
     .map_err(to_err)?;

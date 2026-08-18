@@ -19,6 +19,7 @@ pub struct ScanReport {
     pub files_seen: u64,
     pub files_new: u64,
     pub files_changed: u64,
+    pub files_gone: u64,
     pub files_unsupported: u64,
     pub files_unverified: u64,
     pub families_new: u64,
@@ -40,9 +41,47 @@ pub fn scan_root(conn: &Connection, root_id: i64, opts: &ScanOptions) -> Result<
         return Ok(report);
     }
     store::root_probe(conn, &root, now);
+    conn.execute("DROP TABLE IF EXISTS _seen", []).ok();
+    conn.execute("CREATE TEMP TABLE _seen(root_id INTEGER NOT NULL, rel TEXT NOT NULL, PRIMARY KEY(root_id, rel))", [])
+        .map_err(to_scan_err)?;
     walk(conn, &root, &root_path, "", opts, &mut report);
+    reconcile_missing(conn, root_id, &mut report);
+    conn.execute("DROP TABLE IF EXISTS _seen", []).ok();
     store::root_scan_done(conn, root_id, now);
     Ok(report)
+}
+
+fn to_scan_err(e: rusqlite::Error) -> String {
+    format!("scan:{e}")
+}
+
+fn reconcile_missing(conn: &Connection, root_id: i64, report: &mut ScanReport) {
+    let gone: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM files f
+              WHERE f.root_id=?1 AND f.state='present'
+                AND NOT EXISTS (SELECT 1 FROM _seen s WHERE s.root_id=?1 AND s.rel=f.rel_path)",
+            [root_id],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if gone == 0 {
+        return;
+    }
+    conn.execute(
+        "UPDATE files SET state='missing', blob_id=NULL, hash_state='none'
+          WHERE root_id=?1 AND state='present'
+            AND NOT EXISTS (SELECT 1 FROM _seen s WHERE s.root_id=?1 AND s.rel=files.rel_path)",
+        [root_id],
+    )
+    .ok();
+    conn.execute(
+        "DELETE FROM file_roles WHERE file_id IN (
+           SELECT id FROM files WHERE root_id=?1 AND state='missing')",
+        [root_id],
+    )
+    .ok();
+    report.files_gone += gone as u64;
 }
 
 fn walk(conn: &Connection, root: &store::RootRow, dir: &Path, prefix: &str, opts: &ScanOptions, report: &mut ScanReport) {
@@ -75,6 +114,7 @@ fn walk(conn: &Connection, root: &store::RootRow, dir: &Path, prefix: &str, opts
 
 fn ingest_file(conn: &Connection, root: &store::RootRow, rel: &str, opts: &ScanOptions, report: &mut ScanReport) {
     report.files_seen += 1;
+    conn.execute("INSERT OR IGNORE INTO _seen(root_id, rel) VALUES (?1, ?2)", rusqlite::params![root.id, rel]).ok();
     let full = PathBuf::from(&root.path).join(rel);
     let sm = match std::fs::symlink_metadata(&full) {
         Ok(m) => m,

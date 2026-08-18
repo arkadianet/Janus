@@ -58,6 +58,7 @@ CREATE TABLE files (
   hash_state TEXT DEFAULT 'none',
   parse_state TEXT DEFAULT 'pending',
   parse_error TEXT,
+  state TEXT NOT NULL DEFAULT 'present',
   UNIQUE (root_id, rel_path)
 );
 

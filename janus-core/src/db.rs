@@ -38,6 +38,21 @@ pub fn require_schema(conn: &Connection) -> rusqlite::Result<()> {
         .collect::<Result<_, _>>()?;
     if tables.is_empty() {
         init_schema(conn)?;
+    } else {
+        migrate(conn)?;
+    }
+    Ok(())
+}
+
+fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    let cols: Vec<String> = conn
+        .prepare("PRAGMA table_info(files)")
+        .unwrap()
+        .query_map([], |r| r.get(1))
+        .unwrap()
+        .collect::<Result<_, _>>()?;
+    if !cols.iter().any(|c| c == "state") {
+        conn.execute_batch("ALTER TABLE files ADD COLUMN state TEXT NOT NULL DEFAULT 'present';")?;
     }
     Ok(())
 }

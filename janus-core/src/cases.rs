@@ -30,6 +30,8 @@ struct Case {
     #[serde(default)]
     files: Vec<FiFile>,
     #[serde(default)]
+    delete_after_first_scan: Vec<String>,
+    #[serde(default)]
     expect: Expect,
     #[serde(default)]
     given: Given,
@@ -106,6 +108,12 @@ struct Expect {
     searchable: bool,
     #[serde(default)]
     no_invented_family_name: bool,
+    #[serde(default)]
+    files_gone: i64,
+    #[serde(default)]
+    missing_rows: i64,
+    #[serde(default)]
+    present_rows: i64,
 }
 
 #[derive(Deserialize, Default)]
@@ -170,6 +178,17 @@ fn run_one(case: &Case, fixtures: &Path) -> CaseReport {
         return report(case, Status::Fail, format!("scan:{e}"));
     }
 
+    let mut second_report: Option<scan::ScanReport> = None;
+    if !case.delete_after_first_scan.is_empty() {
+        for rel in &case.delete_after_first_scan {
+            let _ = std::fs::remove_file(root_dir.join(rel));
+        }
+        second_report = Some(match scan::scan_root(&conn, root_id, &opts) {
+            Ok(r) => r,
+            Err(e) => return report(case, Status::Fail, format!("rescan:{e}")),
+        });
+    }
+
     for f in &case.files {
         if let Some(pubname) = &f.publisher {
             let _ = conn.execute(
@@ -182,7 +201,7 @@ fn run_one(case: &Case, fixtures: &Path) -> CaseReport {
         }
     }
 
-    match assert_expectations(case, &conn, root_id) {
+    match assert_expectations(case, &conn, root_id, second_report.as_ref()) {
         Ok(()) => report(case, Status::Pass, "ok".to_string()),
         Err(detail) => report(case, Status::Fail, detail),
     }
@@ -201,10 +220,13 @@ fn count(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0)
 }
 
-fn assert_expectations(case: &Case, conn: &Connection, root_id: i64) -> Result<(), String> {
+fn assert_expectations(case: &Case, conn: &Connection, root_id: i64, second: Option<&scan::ScanReport>) -> Result<(), String> {
     let mut fail: Vec<String> = Vec::new();
 
     for f in &case.files {
+        if case.delete_after_first_scan.contains(&f.name) {
+            continue;
+        }
         if let Some(role) = &f.role {
             let got: Option<String> = conn
                 .query_row(
@@ -372,6 +394,25 @@ fn assert_expectations(case: &Case, conn: &Connection, root_id: i64) -> Result<(
         let fams = count(conn, "SELECT COUNT(*) FROM model_families");
         if fams != 0 {
             fail.push(format!("no_invented_family_name want 0 families got {fams}"));
+        }
+    }
+
+    if case.expect.files_gone != 0 {
+        let got = second.map(|r| r.files_gone as i64).unwrap_or(0);
+        if got != case.expect.files_gone {
+            fail.push(format!("files_gone want {} got {got}", case.expect.files_gone));
+        }
+    }
+    if case.expect.missing_rows != 0 {
+        let got = count(conn, &format!("SELECT COUNT(*) FROM files WHERE root_id={root_id} AND state='missing'"));
+        if got != case.expect.missing_rows {
+            fail.push(format!("missing_rows want {} got {got}", case.expect.missing_rows));
+        }
+    }
+    if case.expect.present_rows != 0 {
+        let got = count(conn, &format!("SELECT COUNT(*) FROM files WHERE root_id={root_id} AND state='present'"));
+        if got != case.expect.present_rows {
+            fail.push(format!("present_rows want {} got {got}", case.expect.present_rows));
         }
     }
 
