@@ -1,0 +1,10 @@
+.env
+*.db
+*.db-wal
+*.db-shm
+target/
+node_modules/
+dist/
+.janus-partial/
+.janus-root
+.DS_Store

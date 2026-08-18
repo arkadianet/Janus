@@ -1,0 +1,15 @@
+id = "S2"
+title = "Unrelated 8B Llamas stay two families"
+
+[[files]]
+name = "Foo-8B-Instruct-Q4_K_M.gguf"
+known_basename = "Foo-8B-Instruct"
+
+[[files]]
+name = "Bar-8B-Instruct-Q4_K_M.gguf"
+known_basename = "Bar-8B-Instruct"
+
+[expect]
+family_count = 2
+silent_merge = false
+# Jaccard-on-tokens must not auto-merge

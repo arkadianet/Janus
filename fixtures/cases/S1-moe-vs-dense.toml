@@ -1,0 +1,17 @@
+id = "S1"
+title = "30B-A3B vs 32B do not share family_key"
+
+[[files]]
+name = "Qwen3-30B-A3B-Q4_K_M.gguf"
+known_params_total = 30.5
+known_params_active = 3.0
+
+[[files]]
+name = "Qwen3-32B-Q4_K_M.gguf"
+known_params_total = 32.0
+known_params_active = 32.0
+
+[expect]
+family_count = 2
+silent_merge = false
+merge_suggestion = true

@@ -1,0 +1,15 @@
+id = "S4"
+title = "Publisher is a variant axis"
+
+[[files]]
+name = "qwen3-coder-30b-q4_k_m-bartowski.gguf"
+publisher = "bartowski"
+
+[[files]]
+name = "qwen3-coder-30b-q4_k_m.gguf"
+publisher = "official"
+
+[expect]
+family_count = 1
+variant_count = 2
+publishers = ["bartowski", "official"]

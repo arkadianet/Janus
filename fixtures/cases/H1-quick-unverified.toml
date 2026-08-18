@@ -1,0 +1,15 @@
+id = "H1"
+title = "Quick scan cannot satisfy have_bytes"
+
+[scan]
+quick = true
+
+[[files]]
+name = "model.gguf"
+
+[expect]
+hash_state = "none"
+have_bytes = false
+skipped_have_bytes = false
+fetch_suppressed = false
+grouping_allowed = true

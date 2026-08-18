@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Design / product law
+    url: https://github.com/arkadianet/Janus/blob/main/PRODUCT.md
+    about: v1 done-ness lives here, not in a chat thread.
+  - name: Never-list
+    url: https://github.com/arkadianet/Janus/blob/main/DESIGN.md
+    about: Chat, serve, convert, pickle, and indexers are not features.

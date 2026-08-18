@@ -1,0 +1,52 @@
+# Copy toward $config/janus/config.toml (platform dirs; see DESIGN.md §6).
+# Catalogue never requires this file. Radar/fetch read it later.
+
+schema_version = 1
+
+[daemon]
+# Loopback only unless [daemon.expose] is fully set.
+api = "127.0.0.1:4321"
+
+# Off by default. All three required before a non-loopback bind is legal.
+# [daemon.expose]
+# auth = "token"
+# tls_cert = ""
+# tls_key = ""
+# allow_origins = ["http://127.0.0.1:4321"]
+
+[scan]
+# --quick equivalent: header parse, no full hash. Unverified files
+# cannot satisfy have_bytes / fetch-suppression.
+quick = false
+follow_out_of_root_symlinks = false
+skip_unhydrated_placeholders = true
+
+[hash]
+# One streaming pass writes both. Do not SHA-256 in a second full read.
+blake3 = true
+sha256 = true
+
+[enrichment]
+# Off. Opt-in per provider.
+enabled = false
+
+# [[enrichment.providers]]
+# id = "hf"
+# enabled = false
+#
+# [[enrichment.providers]]
+# id = "gguf-index"
+# enabled = false
+# # Local parquet/sqlite cache, not a live Mozilla API.
+
+[[profiles]]
+name = "daily-llm"
+formats = ["gguf"]
+quants = ["Q4_K_M", "Q5_K_M"]
+cutoff = "Q4_K_M"
+publishers = ["bartowski", "official"]
+max_bytes = "40GB"
+exclude_name = ["i1", "-IQ"]
+
+# Fetch root is registered with `janus root add --kind fetch`, not here.
+# JANUS_FETCH_ROOT in .env is an override only.

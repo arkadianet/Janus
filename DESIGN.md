@@ -2,6 +2,9 @@
 
 **Working title:** Janus — the Plex *and* Sonarr of your local AI model hoard.
 
+**Related:** [PRODUCT.md](PRODUCT.md) (v1 done) · [ROADMAP.md](ROADMAP.md) ·
+[docs/README.md](docs/README.md) (CLI, UI, API, schema, cases).
+
 **One-line definition:** A local-first library for the AI model files you
 already own, with a second face that watches the outside world and can fetch
 what you are missing — without becoming another downloader.

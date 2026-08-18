@@ -1,0 +1,16 @@
+id = "F2"
+title = "Same BLAKE3 is one blob, two files"
+
+[[files]]
+name = "a/qwen.gguf"
+same_blob = "x"
+
+[[files]]
+name = "b/qwen-copy.gguf"
+same_blob = "x"
+
+[expect]
+family_count = 1
+blob_count = 1
+file_count = 2
+reclaimable_inodes = 1

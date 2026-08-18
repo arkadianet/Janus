@@ -1,0 +1,14 @@
+id = "R3"
+title = "mmproj is a role, not a family"
+
+[[files]]
+name = "qwen3-coder-30b-q4.gguf"
+role = "weights"
+
+[[files]]
+name = "qwen3-coder-30b-mmproj.gguf"
+role = "mmproj"
+
+[expect]
+family_count = 1
+roles = ["weights", "mmproj"]
