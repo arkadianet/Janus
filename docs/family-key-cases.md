@@ -21,14 +21,19 @@ Truth: KV / tensors = `known`. Filename = `inferred`.
 
 ### F1 — Three Qwen GGUFs (the brief)
 
-| File | Expect |
+Requires GGUF header fixtures (`fixtures/cache/F1/…`). Filename-only
+input is not enough: `qwen3-coder-q4.gguf` infers `Q4`, not `Q4_K_M`.
+Assert `Q4_K_M` / `Q5_K_M` / `Q8_0` only from `general.file_type` (known).
+
+| File | Expect (from header) |
 |---|---|
-| `qwen3-coder-q4.gguf` | same family as the next two |
+| `qwen3-coder-q4.gguf` | same family; quant `Q4_K_M` (header), not filename `Q4` |
 | `Qwen3-Coder-30B-Q5_K_M.gguf` | variant Q5_K_M |
-| `Qwen3-Coder-30B-Q8.gguf` | variant Q8_0 / Q8 |
+| `Qwen3-Coder-30B-Q8.gguf` | variant Q8_0 |
 
 Same `known` basename + arch + params. Quants differ. Publisher `unknown`
-unless KV/filename says otherwise.
+unless KV/filename says otherwise. Do not run the Q4_K_M assertion until
+the header fixtures are present.
 
 ### F2 — Same bytes, two names
 

@@ -10,8 +10,9 @@ This page is the law for **done**. [DESIGN.md](DESIGN.md) is the law for
 ## Promise
 
 Figure out what you already have. Tell the truth about known vs guessed.
-Do not move a file. Do not need the internet. Do not download a file the
-catalogue already knows (unless `--force`).
+Do not move a file. Do not need the internet. Do not download a file that
+is already **verified-owned** (`have_bytes`: full hash or trusted provider
+digest; `--quick` / `hash_state=none` does not count) unless `--force`.
 
 Janus is a catalogue first, an acquirer second, a runtime never.
 
@@ -30,7 +31,10 @@ User zero is the author. Ship when *they* would throw away the spreadsheet.
 
 ---
 
-## v1 is done when (Phase A + B)
+## First product (called **v1** here) is done when (Phase A + B)
+
+This is **not** SemVer `1.0.0`. Tags: `0.1.0` = Phase A, `0.2.0` = Phase B
+(this sheet). `1.0.0` is Phase D (radar + fetch) in [ROADMAP.md](ROADMAP.md).
 
 Run against the [golden hoard](docs/golden-hoard.md). Every line must hold.
 
@@ -54,15 +58,15 @@ Run against the [golden hoard](docs/golden-hoard.md). Every line must hold.
 10. Someone else can follow the three commands in the README without
     reading DESIGN.md.
 
-**Not required for v1:** radar, fetch, daemon-as-the-only-way-to-live,
+**Not required for this v1 (0.2.0):** radar, fetch, daemon-as-the-only-way-to-live,
 managed reorg, delete/hardlink apply, Tauri, VRAM-fit, launch shortcuts.
 
-Radar (Phase C) and fetch (Phase D) make a *full* Janus. They are the next
-product, not the first.
+Radar (Phase C, `0.3.0`) and fetch (Phase D, SemVer `1.0.0`) make a
+*complete* Janus. They are the next product, not this sheet.
 
 ---
 
-## What v1 will not do
+## What this v1 will not do
 
 See DESIGN.md §16 never-list. Short version: no chat, no serve, no Hub
 upload, no convert, no pickle, no torrent/`*arr` indexers, no default

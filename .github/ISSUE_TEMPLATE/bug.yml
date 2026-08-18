@@ -25,4 +25,4 @@ body:
       required: true
   - type: markdown
     attributes:
-      value: Do not file chat, serve, upload, or torrent-indexer requests.
+      value: Do not file chat, serve, convert, pickle, or indexer requests.

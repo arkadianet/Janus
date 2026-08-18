@@ -7,8 +7,10 @@ body:
     id: case_id
     attributes:
       label: Case id
-      description: e.g. S1, or NEW
-      placeholder: S1
+      description: Existing id from docs/family-key-cases.md (F1, S1, …), or NEW
+      placeholder: NEW
+    validations:
+      required: true
   - type: textarea
     id: files
     attributes:

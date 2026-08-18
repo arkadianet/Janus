@@ -33,8 +33,10 @@ JSON. Versioned.
 
 Required on import: `format`, `format_version`, `family_key_algo`,
 `family_aliases`, `declined_merges`. If `family_key_algo` does not match
-this build, import may load aliases/declines and must not silently rewrite
-keys.
+this build, **reject** the manifest (`export.algo_mismatch`). Do not
+activate aliases or declined merges by matching raw strings across
+algorithms. Load those decisions only after an explicit key-migration
+step that rewrites them into the current algo.
 
 `enrichments` may be omitted (rebuildable, marked `external`).
 
@@ -42,6 +44,8 @@ keys.
 
 - Never overwrite user files on disk.
 - Never assign a fetch write to a catalogue path.
-- Reconcile roots by `mount_id` first, path second — not path alone if
-  `mount_id` is missing (see DESIGN.md root identity).
+- Reconcile roots by `mount_id` first. Reject a root that has no stable
+  `mount_id` unless a validated `.janus-root` marker is present or the
+  user explicitly re-registers that root (`root.no_mount_id`). Never
+  associate such a root by path alone.
 - Duplicate `remote_key` / alias rows upsert.

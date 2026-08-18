@@ -19,6 +19,7 @@ change; `code` must not.
 | `hash.unverified` | Caller asked for have_bytes on `hash_state=none` | Full scan / trusted digest |
 | `identity.merge_declined` | Pair is in `declined_merges` | Stop nagging |
 | `export.incomplete` | Missing aliases/declines in payload | Refuse import |
+| `export.algo_mismatch` | Manifest `family_key_algo` ≠ this build | Migrate keys, then re-import; do not load raw aliases |
 | `api.bind_not_loopback` | `--api 0.0.0.0` without expose trio | Bind localhost |
 | `radar.variant_family_mismatch` | monitor.variant not in monitor.family | Reject monitor |
 | `wanted.no_sha256` | Fetch/install without digest | Fail closed; no bytes |

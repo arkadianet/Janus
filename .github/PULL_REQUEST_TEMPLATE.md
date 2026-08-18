@@ -18,4 +18,4 @@ Which PRODUCT / DESIGN / family-key / error line does this implement or fix?
 - [ ] Does not write discovery roots
 - [ ] Does not treat unverified hashes as owned
 - [ ] Does not add chat / serve / convert / pickle
-- [ ] New awkward identity cases were added to `fixtures/cases/`, not deleted
+- [ ] New awkward identity cases were added to both `docs/family-key-cases.md` and `fixtures/cases/`, not deleted

@@ -11,8 +11,8 @@ binary yet. See [PRODUCT.md](PRODUCT.md) for what v1 means and
   are unplugged. Group by family / revision / variant. Say what is known
   vs guessed.
 - **Radar + fetch** (Sonarr): wanted / missing / cutoff against a quality
-  profile. By default, never download bytes the catalogue already has;
-  `--force` may redownload an already-owned blob.
+  profile. By default, never download bytes that are already
+  **verified-owned** (`have_bytes`); `--force` may redownload that blob.
 
 Janus is not a runtime, chat UI, Hub mirror, or torrent/`*arr` indexer
 stack.

@@ -63,7 +63,7 @@ CREATE TABLE files (
 
 CREATE TABLE model_families (
   id INTEGER PRIMARY KEY,
-  family_key TEXT UNIQUE,
+  family_key TEXT NOT NULL UNIQUE,
   name TEXT,
   arch TEXT,
   params_total REAL,
@@ -178,8 +178,8 @@ CREATE TABLE wanted_items (
   size INTEGER,
   sha256 TEXT,
   status TEXT,
-  local_blob_id INTEGER,
-  local_root_id INTEGER
+  local_blob_id INTEGER REFERENCES blobs,
+  local_root_id INTEGER REFERENCES storage_roots
 );
 
 CREATE TABLE fetch_tasks (

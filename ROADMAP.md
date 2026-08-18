@@ -86,7 +86,9 @@ One wanted item → fetch root → verify → ingest.
 | Restart | Existing dest with matching SHA-256 marked fetched, not overwritten |
 | Atomicity | Stage under `<fetch-root>/.janus-partial/`, then fsync + rename |
 
-**Public milestone:** `1.0.0` — two-faced Janus. Still not a runtime.
+**Public milestone:** SemVer `1.0.0` — two-faced Janus (radar + fetch).
+Not the PRODUCT.md “v1” sheet (that is Phase A+B / `0.2.0`). Still not a
+runtime.
 
 ---
 
