@@ -1,8 +1,8 @@
 # Fixtures
 
-No multi-GB weights in git. Cases are declarative. When Phase A starts,
-drop **header-only** or tiny public files next to the case (or fetch into
-`fixtures/cache/`, gitignored).
+No multi-GB weights in git. Cases are declarative. The harness synthesizes
+tiny GGUF/safetensors headers. Optional: drop real header-only files next
+to a case (or fetch into `fixtures/cache/`, gitignored).
 
 Each `cases/*.toml` maps to [docs/family-key-cases.md](../docs/family-key-cases.md).
 

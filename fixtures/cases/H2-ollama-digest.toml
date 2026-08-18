@@ -1,0 +1,12 @@
+id = "H2"
+title = "Ollama sha256 blob name is a trusted digest"
+see = "docs/family-key-cases.md"
+
+[[files]]
+name = "blobs/sha256-PLACEHOLDER"
+ollama_digest = true
+
+[expect]
+hash_state = "full"
+have_bytes = true
+trusted_digest = true

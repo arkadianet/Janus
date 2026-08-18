@@ -1,0 +1,13 @@
+id = "R5"
+title = "Diffusers dir is structural diffusion, not GGUF identity"
+see = "docs/family-key-cases.md"
+
+[[files]]
+name = "pipe/model_index.json"
+role = "config"
+json = "{\"_class_name\":\"StableDiffusionPipeline\",\"_diffusers_version\":\"0.27.0\"}"
+
+[expect]
+family_count = 1
+kinds = ["diffusion"]
+roles = ["config"]

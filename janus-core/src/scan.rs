@@ -1,5 +1,6 @@
 use crate::detect;
-use crate::ev::{Format, Level, Role};
+use crate::ev::{Format, Kind, Level, Role};
+use crate::filename;
 use crate::hash;
 use crate::identity;
 use crate::parse;
@@ -50,6 +51,7 @@ pub fn scan_root(conn: &Connection, root_id: i64, opts: &ScanOptions) -> Result<
     conn.execute("CREATE TEMP TABLE _seen(root_id INTEGER NOT NULL, rel TEXT NOT NULL, PRIMARY KEY(root_id, rel))", [])
         .map_err(to_scan_err)?;
     walk(conn, &root, &root_path, "", 0, opts, &mut report)?;
+    attach_companions(conn, root_id);
     let tx = conn.unchecked_transaction().map_err(to_scan_err)?;
     let gone = reconcile_missing(&*tx, root_id)?;
     report.files_gone += gone;
@@ -61,6 +63,72 @@ pub fn scan_root(conn: &Connection, root_id: i64, opts: &ScanOptions) -> Result<
 
 fn to_scan_err(e: rusqlite::Error) -> String {
     format!("scan:{e}")
+}
+
+fn file_alloc_id(path: &Path, m: &std::fs::Metadata) -> (i64, i64) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let _ = path;
+        (m.dev() as i64, m.ino() as i64)
+    }
+    #[cfg(windows)]
+    {
+        let _ = m;
+        win_alloc_id(path).unwrap_or_else(|| (0, path_fallback_ino(path)))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = m;
+        (0, path_fallback_ino(path))
+    }
+}
+
+#[cfg(windows)]
+fn win_alloc_id(path: &Path) -> Option<(i64, i64)> {
+    use std::os::windows::io::AsRawHandle;
+    let f = std::fs::File::open(path).ok()?;
+    let mut info = ByHandleFileInformation::default();
+    let ok = unsafe { GetFileInformationByHandle(f.as_raw_handle(), &mut info) };
+    if ok == 0 {
+        return None;
+    }
+    let ino = ((info.n_file_index_high as u64) << 32) | info.n_file_index_low as u64;
+    Some((info.volume_serial as i64, ino as i64))
+}
+
+#[cfg(windows)]
+#[repr(C)]
+#[derive(Default)]
+struct ByHandleFileInformation {
+    file_attributes: u32,
+    creation: [u32; 2],
+    access: [u32; 2],
+    write: [u32; 2],
+    volume_serial: u32,
+    size_high: u32,
+    size_low: u32,
+    links: u32,
+    n_file_index_high: u32,
+    n_file_index_low: u32,
+}
+
+#[cfg(windows)]
+extern "system" {
+    fn GetFileInformationByHandle(
+        handle: std::os::windows::raw::HANDLE,
+        info: *mut ByHandleFileInformation,
+    ) -> i32;
+}
+
+#[cfg(not(unix))]
+fn path_fallback_ino(path: &Path) -> i64 {
+    let s = path.to_string_lossy();
+    let mut h: i64 = 0xcbf2_9ce4_8422_2325u64 as i64;
+    for b in s.as_bytes() {
+        h = h.wrapping_mul(0x100_0000_01b3u64 as i64) ^ (*b as i64);
+    }
+    h
 }
 
 fn reconcile_missing(conn: &Connection, root_id: i64) -> Result<u64, String> {
@@ -154,13 +222,7 @@ fn ingest_file(conn: &Connection, root: &store::RootRow, rel: &str, opts: &ScanO
     let size = m.len() as i64;
     let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
     let ctime = m.created().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or_else(|| mtime);
-    #[cfg(unix)]
-    let (dev, ino) = {
-        use std::os::unix::fs::MetadataExt;
-        (m.dev() as i64, m.ino() as i64)
-    };
-    #[cfg(not(unix))]
-    let (dev, ino) = (0i64, 0i64);
+    let (dev, ino) = file_alloc_id(&full, &m);
 
     let existing = store::file_find(conn, root.id, rel);
     let symlink_target = if is_symlink {
@@ -172,36 +234,13 @@ fn ingest_file(conn: &Connection, root: &store::RootRow, rel: &str, opts: &ScanO
     let (blob_id, hash_state) = if is_symlink {
         (None, "none".to_string())
     } else {
-        decide_hash(conn, existing.as_ref(), &full, opts)
+        decide_hash(conn, existing.as_ref(), &full, size, opts)
     };
     if hash_state != "full" {
         report.files_unverified += 1;
     }
 
-    let (parse_state, parse_error, _format, _parsed, candidate) = if is_symlink {
-        ("unsupported".to_string(), Some("symlink".to_string()), Format::Unknown, None::<parse::Parsed>, None)
-    } else {
-        let format = match detect::detect(&full) {
-            Ok(f) => f,
-            Err(_) => Format::Unknown,
-        };
-        match format {
-            Format::Unknown => {
-                report.files_unsupported += 1;
-                ("unsupported".to_string(), Some("unsupported".to_string()), format, None, None)
-            }
-            _ => {
-                let parsed = parse::parse_prefix(&full, &format, GGUF_PREFIX_CAP);
-                if parsed.parse_error.is_some() {
-                    report.files_unsupported += 1;
-                    ("unsupported".to_string(), parsed.parse_error.clone(), format, None, None)
-                } else {
-                    let cand = identity::identify(rel, &parsed);
-                    ("ok".to_string(), None, format, None, Some(cand))
-                }
-            }
-        }
-    };
+    let (parse_state, parse_error, candidate) = classify_file(&full, rel, is_symlink, report);
 
     let file_id = match store::file_upsert(
         conn,
@@ -234,15 +273,98 @@ fn ingest_file(conn: &Connection, root: &store::RootRow, rel: &str, opts: &ScanO
     if let Some(cand) = candidate {
         persist_identity(conn, file_id, &cand, blob_id, &hash_state, report);
     }
+    if let Some((repo, rev)) = filename::hf_cache_repo(rel) {
+        store::provenance_put(conn, "file", file_id, "downloaded_from", "hf-cache", Some(&repo), Some(&rev));
+    }
     Ok(())
+}
+
+fn classify_file(
+    full: &Path,
+    rel: &str,
+    is_symlink: bool,
+    report: &mut ScanReport,
+) -> (String, Option<String>, Option<identity::Candidate>) {
+    if is_symlink {
+        return ("unsupported".into(), Some("symlink".into()), None);
+    }
+    if filename::is_partial(rel) {
+        return ("partial".into(), None, None);
+    }
+    let format = match detect::detect(full) {
+        Ok(f) => f,
+        Err(_) => Format::Unknown,
+    };
+    if filename::is_model_index(rel) || format == Format::Diffusers {
+        let parsed = parse::parse_prefix(full, &Format::Diffusers, GGUF_PREFIX_CAP);
+        if parsed.parse_error.is_some() {
+            report.files_unsupported += 1;
+            return ("unsupported".into(), parsed.parse_error, None);
+        }
+        return ("ok".into(), None, Some(identity::identify(rel, &parsed)));
+    }
+    if filename::is_weight_index(rel) || filename::is_config_json(rel) {
+        let parsed = parse::Parsed {
+            format: Format::Unknown,
+            general_name: None,
+            basename: None,
+            finetune: None,
+            arch: None,
+            params_total: None,
+            params_active: None,
+            context_len: None,
+            file_type: None,
+            quant_from_header: None,
+            kind: None,
+            parse_error: None,
+        };
+        return ("ok".into(), None, Some(identity::identify(rel, &parsed)));
+    }
+    match format {
+        Format::Unknown => {
+            report.files_unsupported += 1;
+            ("unsupported".into(), Some("unsupported".into()), None)
+        }
+        Format::Pytorch => {
+            if let Some(cfg) = parse::config::read_adjacent(full) {
+                let mut parsed = parse::parse_prefix(full, &format, GGUF_PREFIX_CAP);
+                parsed.parse_error = None;
+                parse::apply_config(&mut parsed, &cfg);
+                ("ok".into(), Some("pickle_refused".into()), Some(identity::identify(rel, &parsed)))
+            } else {
+                report.files_unsupported += 1;
+                ("unsupported".into(), Some("pickle_refused".into()), None)
+            }
+        }
+        _ => {
+            let mut parsed = parse::parse_prefix(full, &format, GGUF_PREFIX_CAP);
+            if let Some(cfg) = parse::config::read_adjacent(full) {
+                parse::apply_config(&mut parsed, &cfg);
+            }
+            if parsed.parse_error.is_some() {
+                report.files_unsupported += 1;
+                ("unsupported".into(), parsed.parse_error.clone(), None)
+            } else {
+                ("ok".into(), None, Some(identity::identify(rel, &parsed)))
+            }
+        }
+    }
 }
 
 fn decide_hash(
     conn: &Connection,
     _existing: Option<&store::ExistingFile>,
     full: &Path,
+    size: i64,
     opts: &ScanOptions,
 ) -> (Option<i64>, String) {
+    if let Some(sha) = hash::ollama_named_sha256(full) {
+        let key = format!("sha256:{sha}");
+        match store::blob_upsert(conn, &key, Some(&sha), size, None) {
+            Ok(id) => return (Some(id), "full".to_string()),
+            Err(_) => {}
+        }
+    }
     // Partial (head+tail) xxh3 is not enough to reuse a full digest: a middle
     // overwrite would keep a stale BLAKE3. Full scans always rehash; --quick
     // stays hash_state=none.
@@ -269,17 +391,25 @@ fn persist_identity(
     hash_state: &str,
     report: &mut ScanReport,
 ) {
-    match cand.role {
-        Role::Weights | Role::Shard => {
-            let Some(key) = &cand.family_key else {
-                return;
+    let blob_family = blob_id.and_then(|id| store::family_for_blob(conn, id));
+    let as_model = matches!(cand.role, Role::Weights | Role::Shard) || cand.kind.value == Kind::Diffusion;
+    if as_model {
+            let key = match &cand.family_key {
+                Some(k) => k.clone(),
+                None if cand.kind.value == Kind::Diffusion => {
+                    identity::family_key(&cand.display_name.value, None, None, None)
+                }
+                None => return,
             };
             let source = level_source(cand.display_name.level);
-            let family_id = match store::family_find(conn, key) {
+            let family_id = if let Some(id) = blob_family {
+                id
+            } else {
+                match store::family_resolve(conn, &key) {
                 Some(id) => id,
                 None => match store::family_insert(
                     conn,
-                    key,
+                    &key,
                     Some(cand.display_name.value.as_str()),
                     cand.arch.as_ref().map(|a| a.value.as_str()),
                     cand.params_total.as_ref().map(|p| p.value),
@@ -293,6 +423,7 @@ fn persist_identity(
                     }
                     Err(_) => return,
                 },
+                }
             };
             if cand.arch.is_some() || cand.params_total.is_some() || cand.context_len.is_some() {
                 store::evidence_put(conn, "family", family_id, "name", &cand.display_name.value, level_str(cand.display_name.level), source);
@@ -329,16 +460,51 @@ fn persist_identity(
                 Ok(id) => id,
                 Err(_) => return,
             };
-            store::file_role_put(conn, file_id, Some(variant_id), None, cand.role.as_str());
+            store::file_role_put(conn, file_id, Some(variant_id), Some(family_id), cand.role.as_str());
             store::evidence_put(conn, "variant", variant_id, "quant", qs, level_str(cand.quant.level), level_source(cand.quant.level));
             store::evidence_put(conn, "variant", variant_id, "publisher", &cand.publisher.value, level_str(cand.publisher.level), "filename");
             store::evidence_put(conn, "variant", variant_id, "subflavour", &cand.subflavour.value, level_str(cand.subflavour.level), "filename");
-        }
-        role @ (Role::Mmproj | Role::Lora | Role::Tokenizer | Role::Config | Role::Sidecar) => {
-            let key = cand.family_key.clone();
-            let family_id = key.as_ref().and_then(|k| store::family_find(conn, k));
-            store::file_role_put(conn, file_id, None, family_id, role.as_str());
-            store::evidence_put(conn, "file", file_id, "role", role.as_str(), "inferred", "filename");
+            return;
+    }
+    let family_id = blob_family.or_else(|| cand.family_key.as_ref().and_then(|k| store::family_resolve(conn, k)));
+    store::file_role_put(conn, file_id, None, family_id, cand.role.as_str());
+    store::evidence_put(conn, "file", file_id, "role", cand.role.as_str(), "inferred", "filename");
+}
+
+fn attach_companions(conn: &Connection, root_id: i64) {
+    let mut stmt = match conn.prepare(
+        "SELECT f.id, f.rel_path FROM files f
+         JOIN file_roles fr ON fr.file_id=f.id
+         WHERE f.root_id=?1 AND fr.family_id IS NULL AND fr.variant_id IS NULL
+           AND fr.role IN ('config','lora','mmproj','tokenizer','sidecar')",
+    ) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let rows: Vec<(i64, String)> = stmt
+        .query_map([root_id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .ok()
+        .map(|it| it.flatten().collect())
+        .unwrap_or_default();
+    drop(stmt);
+    for (file_id, rel) in rows {
+        let parent = rel.rsplit_once('/').map(|(p, _)| p).unwrap_or("");
+        let like = if parent.is_empty() { "%".to_string() } else { format!("{parent}/%") };
+        let fam: Option<i64> = conn
+            .query_row(
+                "SELECT COALESCE(v.family_id, fr.family_id) FROM files f
+                 JOIN file_roles fr ON fr.file_id=f.id
+                 LEFT JOIN model_variants v ON v.id=fr.variant_id
+                 WHERE f.root_id=?1 AND f.id!=?2 AND (v.family_id IS NOT NULL OR fr.family_id IS NOT NULL)
+                   AND (f.rel_path LIKE ?3 OR (?4 = '' AND instr(f.rel_path, '/')=0))
+                 LIMIT 1",
+                rusqlite::params![root_id, file_id, like, parent],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(fid) = fam {
+            conn.execute("UPDATE file_roles SET family_id=?1 WHERE file_id=?2", rusqlite::params![fid, file_id])
+                .ok();
         }
     }
 }

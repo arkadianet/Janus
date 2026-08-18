@@ -67,6 +67,14 @@ struct FiFile {
     same_blob: Option<String>,
     #[serde(default)]
     metadata_empty: bool,
+    #[serde(default)]
+    json: Option<String>,
+    #[serde(default)]
+    ollama_digest: bool,
+    #[serde(default)]
+    parse_state: Option<String>,
+    #[serde(default)]
+    parse_error: Option<String>,
 }
 
 #[derive(Deserialize, Default)]
@@ -114,12 +122,30 @@ struct Expect {
     missing_rows: i64,
     #[serde(default)]
     present_rows: i64,
+    #[serde(default)]
+    parse_state: Option<String>,
+    #[serde(default)]
+    kinds: Vec<String>,
+    #[serde(default)]
+    pickle_refused: bool,
+    #[serde(default)]
+    provenance_files: Vec<String>,
+    #[serde(default)]
+    trusted_digest: bool,
 }
 
 #[derive(Deserialize, Default)]
 struct Given {
     #[serde(default)]
     declined: Option<Declined>,
+    #[serde(default)]
+    merge: Option<Merge>,
+}
+
+#[derive(Deserialize)]
+struct Merge {
+    src: String,
+    target: String,
 }
 
 #[derive(Deserialize)]
@@ -218,6 +244,15 @@ fn run_one(case: &Case, fixtures: &Path) -> CaseReport {
         return report(case, Status::Fail, format!("scan:{e}"));
     }
 
+    if let Some(m) = &case.given.merge {
+        if let Err(e) = store::merge_families(&conn, &m.src, &m.target) {
+            return report(case, Status::Fail, format!("merge:{e}"));
+        }
+        if let Err(e) = scan::scan_root(&conn, root_id, &opts) {
+            return report(case, Status::Fail, format!("rescan-after-merge:{e}"));
+        }
+    }
+
     let mut second_report: Option<scan::ScanReport> = None;
     if !case.delete_after_first_scan.is_empty() {
         for rel in &case.delete_after_first_scan {
@@ -293,6 +328,32 @@ fn assert_expectations(case: &Case, conn: &Connection, root_id: i64, second: Opt
                 .ok();
             if got.as_deref() != Some(q.as_str()) {
                 fail.push(format!("file {} quant want {q} got {:?}", f.name, got));
+            }
+        }
+        if let Some(want) = &f.parse_state {
+            let rel = file_rel(f);
+            let got: Option<String> = conn
+                .query_row(
+                    "SELECT parse_state FROM files WHERE root_id=?1 AND rel_path=?2",
+                    params![root_id, rel],
+                    |r| r.get(0),
+                )
+                .ok();
+            if got.as_deref() != Some(want.as_str()) {
+                fail.push(format!("file {} parse_state want {want} got {:?}", f.name, got));
+            }
+        }
+        if let Some(want) = &f.parse_error {
+            let rel = file_rel(f);
+            let got: Option<String> = conn
+                .query_row(
+                    "SELECT parse_error FROM files WHERE root_id=?1 AND rel_path=?2",
+                    params![root_id, rel],
+                    |r| r.get(0),
+                )
+                .ok();
+            if got.as_deref() != Some(want.as_str()) {
+                fail.push(format!("file {} parse_error want {want} got {:?}", f.name, got));
             }
         }
     }
@@ -460,6 +521,62 @@ fn assert_expectations(case: &Case, conn: &Connection, root_id: i64, second: Opt
             fail.push(format!("present_rows want {} got {got}", case.expect.present_rows));
         }
     }
+    if let Some(hs) = &case.expect.parse_state {
+        let got: String = conn
+            .query_row("SELECT parse_state FROM files WHERE root_id=?1 LIMIT 1", [root_id], |r| r.get(0))
+            .unwrap_or_default();
+        if &got != hs {
+            fail.push(format!("parse_state want {hs} got {got}"));
+        }
+    }
+    if !case.expect.kinds.is_empty() {
+        let mut got: Vec<String> = conn
+            .prepare("SELECT DISTINCT kind FROM model_families ORDER BY kind")
+            .and_then(|mut s| s.query_map([], |r| r.get(0)).map(|it| it.collect::<Result<Vec<String>, _>>()))
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+        got.sort();
+        if got != sorted(case.expect.kinds.clone()) {
+            fail.push(format!("kinds want {:?} got {:?}", case.expect.kinds, got));
+        }
+    }
+    if case.expect.pickle_refused {
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE parse_error='pickle_refused'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if n == 0 {
+            fail.push("pickle_refused want parse_error=pickle_refused".to_string());
+        }
+    }
+    if !case.expect.provenance_files.is_empty() {
+        for rel in &case.expect.provenance_files {
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM provenance_entries p
+                     JOIN files f ON f.id=p.subject_id
+                     WHERE p.subject_type='file' AND f.rel_path=?1",
+                    [rel],
+                    |r| r.get(0),
+                )
+                .unwrap_or(0);
+            if n == 0 {
+                fail.push(format!("provenance missing on {rel}"));
+            }
+        }
+    }
+    if case.expect.trusted_digest {
+        let got: String = conn
+            .query_row("SELECT blake3 FROM blobs LIMIT 1", [], |r| r.get(0))
+            .unwrap_or_default();
+        if !got.starts_with("sha256:") {
+            fail.push(format!("trusted_digest want blake3 sha256:… got {got}"));
+        }
+    }
 
     if fail.is_empty() {
         Ok(())
@@ -508,7 +625,11 @@ fn materialize_root(case: &Case, fixtures: &Path) -> Result<Option<PathBuf>, Str
     std::fs::create_dir_all(&root_dir).map_err(|e| e.to_string())?;
     let mut payload: std::collections::HashMap<String, (Vec<u8>, String)> = std::collections::HashMap::new();
     for f in &case.files {
-        let dest = root_dir.join(&f.name);
+        let dest = if f.ollama_digest {
+            root_dir.join("blobs")
+        } else {
+            root_dir.join(&f.name)
+        };
         if let Some(dir) = dest.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
@@ -526,9 +647,32 @@ fn materialize_root(case: &Case, fixtures: &Path) -> Result<Option<PathBuf>, Str
             }
         };
         let _ = &base;
+        let dest = if f.ollama_digest {
+            let sha = sha256_hex(&bytes);
+            let p = root_dir.join(format!("sha256-{sha}"));
+            if let Some(dir) = p.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+            }
+            p
+        } else {
+            dest
+        };
         std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
     }
     Ok(Some(root_dir))
+}
+
+fn file_rel(f: &FiFile) -> String {
+    if f.ollama_digest {
+        String::new()
+    } else {
+        f.name.clone()
+    }
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
 }
 
 fn write_gguf_kv(b: &mut Vec<u8>, key: &str, tag: u32, val: &[u8]) {
@@ -589,6 +733,15 @@ fn synthesize(f: &FiFile, basename: &str) -> Vec<u8> {
         b.extend(json);
         b.extend(vec![0u8; 65536]);
         b
+    } else if lower.ends_with(".json") {
+        f.json.as_deref().unwrap_or("{}").as_bytes().to_vec()
+    } else if f.ollama_digest {
+        let mut b: Vec<u8> = Vec::new();
+        b.extend_from_slice(b"GGUF");
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes());
+        b
     } else {
         b"janus-fixture".to_vec()
     }
@@ -627,4 +780,21 @@ fn derive_basename(name: &str) -> String {
     let size_re = regex::Regex::new(r"(?i)[-_](?:[0-9]+(?:\.[0-9]+)?b|a[0-9]+(?:\.[0-9]+)?b)").unwrap();
     s = size_re.replace_all(&s, "").to_string();
     crate::filename::slug(&s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fixture_cases_pass() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+        let reports = run_all(&fixtures);
+        let fail: Vec<String> = reports
+            .iter()
+            .filter(|r| r.status == Status::Fail)
+            .map(|r| format!("{}: {}", r.id, r.detail))
+            .collect();
+        assert!(fail.is_empty(), "{}", fail.join("\n"));
+    }
 }

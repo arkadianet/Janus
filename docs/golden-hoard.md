@@ -81,6 +81,23 @@ A mock `present=0` is implemented as a **unit test**. It does not satisfy
 PRODUCT item 6, which requires a real unplug/mount of a removable root. The
 checkbox stays off until that run happens.
 
+## How to dogfood (owner)
+
+This agent cannot see `~/llm/models` on `fedora`. Do not invent scan
+results. Run these yourself and tick the handwritten tables above.
+
+```bash
+cargo test --workspace          # includes fixture_cases_pass
+cargo run -p janus -- cases     # same goldens via the CLI
+janus root add ~/llm/models
+janus root discover             # Ollama / LM Studio / HF cache if present
+janus scan                      # all present roots; does not move files
+janus list
+janus doctor
+```
+
+`family_key_algo=1` is frozen in `janus-core`. Changing it is a migration.
+
 ## After scan (trust checks)
 
 - [ ] Folders on catalogue roots have no new Janus files (unless you opted

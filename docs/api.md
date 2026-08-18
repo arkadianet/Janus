@@ -28,6 +28,8 @@ only SQLite writer; CLI becomes a client.
 | GET | `/dups` | Plan only in v1 |
 | GET | `/jobs/{id}` | Progress |
 | GET | `/jobs` | Recent |
+| GET | `/home` | Same counts as `janus status --json` (composed, not a second engine) |
+| GET | `/doctor` | Findings + merge suggestions |
 
 No `/ingest`. Scan and (later) fetch are the only ways bytes enter.
 
@@ -45,8 +47,8 @@ No `/ingest`. Scan and (later) fetch are the only ways bytes enter.
 |---|---|---|
 | GET/PUT | `/profiles` | |
 | GET/POST/DELETE | `/monitors` | variant must belong to family |
-| POST | `/radar` | Sweep; upserts `wanted_items` on `remote_key` |
-| GET | `/wanted` | Query: status |
+| POST | `/radar` | Sweep; requires `{ "opt_in": true }`. Upserts `wanted_items` on `remote_key`. No download. |
+| GET | `/wanted` | Query: status, open, have-offline. Includes `privacy_notice`. |
 
 ## Fetch (Phase D)
 

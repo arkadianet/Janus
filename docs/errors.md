@@ -17,6 +17,7 @@ change; `code` must not.
 | `parse.header_too_large` | Safetensors/GGUF cap hit | File stays unsupported |
 | `parse.pickle_refused` | `.pt/.bin/.pth` weights path | Never unpickle |
 | `hash.unverified` | Caller asked for have_bytes on `hash_state=none` | Full scan / trusted digest |
+| `identity.not_found` | merge/show target is not a known family or alias | Check `list` |
 | `identity.merge_declined` | Pair is in `declined_merges` | Stop nagging |
 | `export.incomplete` | Missing aliases/declines in payload | Refuse import |
 | `export.algo_mismatch` | Manifest `family_key_algo` ≠ this build | Migrate keys, then re-import; do not load raw aliases |

@@ -24,6 +24,76 @@ pub struct Suggestion {
     pub score: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct Finding {
+    pub code: String,
+    pub count: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Report {
+    pub findings: Vec<Finding>,
+    pub suggestions: Vec<Suggestion>,
+}
+
+pub fn report(conn: &Connection) -> Report {
+    let mut findings = Vec::new();
+    push_count(
+        conn,
+        &mut findings,
+        "SELECT COUNT(*) FROM storage_roots WHERE present=0",
+        "root.not_found",
+        "offline or missing roots",
+    );
+    push_count(
+        conn,
+        &mut findings,
+        "SELECT COUNT(*) FROM storage_roots WHERE mount_id IS NULL",
+        "root.no_mount_id",
+        "roots without a volume UUID/serial",
+    );
+    push_count(
+        conn,
+        &mut findings,
+        "SELECT COUNT(*) FROM files WHERE hash_state != 'full'",
+        "hash.unverified",
+        "files not full-hashed",
+    );
+    push_count(
+        conn,
+        &mut findings,
+        "SELECT COUNT(*) FROM files WHERE parse_error='placeholder'",
+        "scan.placeholder",
+        "skipped unhydrated cloud placeholders",
+    );
+    let fetch_n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM storage_roots WHERE kind='fetch'", [], |r| r.get(0))
+        .unwrap_or(0);
+    if fetch_n == 0 {
+        findings.push(Finding {
+            code: "root.not_writable".into(),
+            count: 1,
+            message: "no fetch root registered".into(),
+        });
+    }
+    Report {
+        findings,
+        suggestions: sweep(conn),
+    }
+}
+
+fn push_count(conn: &Connection, out: &mut Vec<Finding>, sql: &str, code: &str, message: &str) {
+    let n: i64 = conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0);
+    if n > 0 {
+        out.push(Finding {
+            code: code.to_string(),
+            count: n,
+            message: message.to_string(),
+        });
+    }
+}
+
 pub fn sweep(conn: &Connection) -> Vec<Suggestion> {
     let mut fams = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
@@ -105,6 +175,25 @@ fn name_similarity(a: &str, b: &str) -> (usize, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_emits_stable_codes() {
+        use crate::{db, store};
+        let c = db::open(None).unwrap();
+        db::init_schema(&c).unwrap();
+        let dir = std::env::temp_dir().join(format!("janus-doc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = store::root_add(&c, "models", dir.to_str().unwrap(), "internal").unwrap();
+        c.execute(
+            "INSERT INTO files (root_id, rel_path, size, mtime, ctime, dev, ino, is_symlink, hash_state, parse_state, state)
+             VALUES (?1,'a.gguf',1,0,0,0,1,0,'none','ok','present')",
+            [id],
+        )
+        .unwrap();
+        let r = report(&c);
+        assert!(r.findings.iter().any(|f| f.code == "hash.unverified"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn moe_vs_dense_similar_but_distinct() {

@@ -57,7 +57,61 @@ pub fn stem(file: &str) -> String {
     name.to_string()
 }
 
+pub fn is_partial(file: &str) -> bool {
+    let lower = file.replace('\\', "/").to_lowercase();
+    if lower.contains("/.janus-partial/") {
+        return true;
+    }
+    let name = Path::new(&lower).file_name().and_then(|n| n.to_str()).unwrap_or(&lower);
+    name.ends_with(".part")
+        || name.ends_with(".part_file")
+        || name.ends_with(".aria2")
+        || name.ends_with(".!qb")
+        || name.ends_with(".crdownload")
+}
+
+pub fn is_model_index(file: &str) -> bool {
+    Path::new(file)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.eq_ignore_ascii_case("model_index.json"))
+        .unwrap_or(false)
+}
+
+pub fn is_config_json(file: &str) -> bool {
+    Path::new(file)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| n.eq_ignore_ascii_case("config.json"))
+        .unwrap_or(false)
+}
+
+pub fn is_weight_index(file: &str) -> bool {
+    file.replace('\\', "/").to_lowercase().ends_with(".index.json") && !is_model_index(file)
+}
+
+pub fn hf_cache_repo(rel: &str) -> Option<(String, String)> {
+    let norm = rel.replace('\\', "/");
+    let re = regex::Regex::new(r"models--([^/]+)/snapshots/([^/]+)").ok()?;
+    let caps = re.captures(&norm)?;
+    let repo = caps.get(1)?.as_str().replace("--", "/");
+    let rev = caps.get(2)?.as_str().to_string();
+    if repo.is_empty() || rev.is_empty() {
+        None
+    } else {
+        Some((repo, rev))
+    }
+}
+
+pub fn hf_snapshot_name(rel: &str) -> Option<String> {
+    let (repo, _) = hf_cache_repo(rel)?;
+    repo.rsplit('/').next().map(|s| s.to_string()).filter(|s| !s.is_empty())
+}
+
 pub fn role_from_name(file: &str) -> Role {
+    if is_model_index(file) || is_config_json(file) || is_weight_index(file) {
+        return Role::Config;
+    }
     let s = stem(file).to_lowercase();
     if s.starts_with("mmproj") || s.contains("mmproj") || s.contains("vision_projector") {
         return Role::Mmproj;
@@ -159,6 +213,27 @@ pub fn display_stem(file: &str) -> String {
     }
     s = DISPLAY_STEM_RE.replace_all(&s, "-").to_string();
     slug(&s)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_suffixes() {
+        assert!(is_partial("model.gguf.crdownload"));
+        assert!(is_partial("other.gguf.part"));
+        assert!(is_partial("fetch/.janus-partial/12.part"));
+        assert!(!is_partial("model.gguf"));
+    }
+
+    #[test]
+    fn hf_cache_repo_from_snapshot_path() {
+        let (repo, rev) = hf_cache_repo("hub/models--Qwen--Qwen3-8B/snapshots/abc123def/model.safetensors").unwrap();
+        assert_eq!(repo, "Qwen/Qwen3-8B");
+        assert_eq!(rev, "abc123def");
+        assert_eq!(hf_snapshot_name("hub/models--Qwen--Qwen3-8B/snapshots/abc123/x.safetensors").as_deref(), Some("Qwen3-8B"));
+    }
 }
 
 pub fn slug(s: &str) -> String {

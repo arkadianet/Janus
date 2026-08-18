@@ -1,16 +1,26 @@
+pub mod availability;
+pub mod bind;
 pub mod cases;
 pub mod db;
 pub mod dedup;
 pub mod detect;
+pub mod discovery;
 pub mod doctor;
 pub mod ev;
 pub mod export;
+pub mod fetch;
 pub mod filename;
 pub mod hash;
 pub mod identity;
+pub mod mount;
 pub mod parse;
+pub mod profile;
+pub mod query;
+pub mod radar;
 pub mod scan;
+pub mod search;
 pub mod store;
+pub mod writer;
 
 pub const SCHEMA_VERSION: &str = "1";
 pub const FAMILY_KEY_ALGO: &str = "1";

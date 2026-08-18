@@ -21,13 +21,18 @@ quick = false
 follow_out_of_root_symlinks = false
 skip_unhydrated_placeholders = true
 
+[presence]
+# Consecutive probe failures before present=0. Cold roots are not polled.
+hysteresis = 3
+
 [hash]
 # One streaming pass writes both. Do not SHA-256 in a second full read.
 blake3 = true
 sha256 = true
 
 [enrichment]
-# Off. Opt-in per provider.
+# Off. Opt-in per provider. Radar listings also stay off until
+# `janus radar --once` or the UI Sweep confirm (opt_in=true).
 enabled = false
 
 # [[enrichment.providers]]

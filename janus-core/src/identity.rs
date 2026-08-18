@@ -64,6 +64,8 @@ pub fn identify(file: &str, parsed: &Parsed) -> Candidate {
         b.value.clone()
     } else if let Some(n) = parsed.general_name.as_ref() {
         n.value.clone()
+    } else if let Some(n) = filename::hf_snapshot_name(file) {
+        n
     } else {
         filename::display_stem(file)
     };

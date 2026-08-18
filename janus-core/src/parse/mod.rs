@@ -1,4 +1,6 @@
+pub mod config;
 pub mod gguf;
+pub mod onnx;
 pub mod safetensors;
 
 use crate::ev::{Field, Format, Kind, Level};
@@ -72,6 +74,11 @@ fn read_prefix(path: &Path, format: &Format, cap: usize) -> Option<Vec<u8>> {
             f.read_exact(&mut buf).ok()?;
             Some(buf)
         }
+        Format::Onnx | Format::Diffusers => {
+            let mut buf = Vec::new();
+            f.take(cap as u64).read_to_end(&mut buf).ok()?;
+            Some(buf)
+        }
         _ => {
             let mut buf = Vec::new();
             f.take(cap as u64).read_to_end(&mut buf).ok()?;
@@ -84,6 +91,9 @@ pub fn parse_bytes(bytes: &[u8], format: &Format) -> Parsed {
     match format {
         Format::Gguf => parse_gguf(bytes),
         Format::Safetensors => parse_safetensors(bytes),
+        Format::Onnx => parse_onnx(bytes),
+        Format::Diffusers => parse_diffusers(bytes),
+        Format::Pytorch => no_facts(Format::Pytorch, Some("pickle_refused".to_string())),
         _ => Parsed {
             format: format.clone(),
             general_name: None,
@@ -98,6 +108,64 @@ pub fn parse_bytes(bytes: &[u8], format: &Format) -> Parsed {
             kind: Some(Field { value: Kind::Unknown, level: Level::Detected }),
             parse_error: None,
         },
+    }
+}
+
+fn parse_onnx(bytes: &[u8]) -> Parsed {
+    match onnx::read(bytes) {
+        Ok(info) => {
+            let name = info.producer.clone();
+            Parsed {
+                format: Format::Onnx,
+                general_name: name.as_ref().map(|s| known(s.clone())),
+                basename: None,
+                finetune: None,
+                arch: None,
+                params_total: None,
+                params_active: None,
+                context_len: None,
+                file_type: None,
+                quant_from_header: None,
+                kind: Some(Field { value: Kind::Unknown, level: Level::Detected }),
+                parse_error: None,
+            }
+        }
+        Err(e) => no_facts(Format::Onnx, Some(e)),
+    }
+}
+
+fn parse_diffusers(bytes: &[u8]) -> Parsed {
+    let v: serde_json::Value = match serde_json::from_slice(bytes) {
+        Ok(v) => v,
+        Err(_) => return no_facts(Format::Diffusers, Some("diffusers: bad json".into())),
+    };
+    let class = v.get("_class_name").and_then(|x| x.as_str()).map(|s| s.to_string());
+    Parsed {
+        format: Format::Diffusers,
+        general_name: class.map(known),
+        basename: None,
+        finetune: None,
+        arch: None,
+        params_total: None,
+        params_active: None,
+        context_len: None,
+        file_type: None,
+        quant_from_header: None,
+        kind: Some(Field { value: Kind::Diffusion, level: Level::Detected }),
+        parse_error: None,
+    }
+}
+
+pub fn apply_config(parsed: &mut Parsed, cfg: &config::ConfigJson) {
+    if parsed.basename.is_none() {
+        if let Some(n) = &cfg.name {
+            parsed.basename = Some(Field::inferred(n.clone()));
+        }
+    }
+    if parsed.arch.is_none() {
+        if let Some(a) = cfg.arch.as_ref().or(cfg.model_type.as_ref()) {
+            parsed.arch = Some(Field::inferred(a.clone()));
+        }
     }
 }
 
@@ -230,5 +298,11 @@ mod tests {
         assert_eq!(p.arch.as_ref().map(|f| f.value.as_str()), Some("qwen3"));
         assert_eq!(p.quant_from_header.as_ref().map(|f| f.value.as_str()), Some("Q4_K_M"));
         assert_eq!(p.kind.as_ref().map(|k| k.value), Some(Kind::Llm));
+    }
+
+    #[test]
+    fn pytorch_never_unpickles() {
+        let p = parse_bytes(b"\x80\x02some-pickle", &Format::Pytorch);
+        assert_eq!(p.parse_error.as_deref(), Some("pickle_refused"));
     }
 }

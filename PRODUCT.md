@@ -3,7 +3,9 @@
 This page is the law for **done**. [DESIGN.md](DESIGN.md) is the law for
 **how**. If they disagree, stop and fix one of them.
 
-**Status:** specified, not implemented. No binary yet.
+**Status:** Phase A CLI, Phase B loopback UI, Phase C radar, and Phase D
+fetch work in tree. This sheet (A+B / `0.2.0`) is not done until the
+golden hoard exit tests pass on the owner's disks.
 
 ---
 

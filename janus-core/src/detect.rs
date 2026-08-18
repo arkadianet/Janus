@@ -22,6 +22,10 @@ pub fn detect(path: &Path) -> std::io::Result<Format> {
             return Ok(Format::Safetensors);
         }
     }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name.eq_ignore_ascii_case("model_index.json") {
+        return Ok(Format::Diffusers);
+    }
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     match ext.as_str() {
         "onnx" => return Ok(Format::Onnx),

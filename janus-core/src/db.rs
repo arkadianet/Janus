@@ -103,6 +103,14 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     if !cols.iter().any(|c| c == "state") {
         conn.execute_batch("ALTER TABLE files ADD COLUMN state TEXT NOT NULL DEFAULT 'present';")?;
     }
+    let root_cols: Vec<String> = {
+        let mut stmt = conn.prepare("PRAGMA table_info(storage_roots)")?;
+        let rows = stmt.query_map([], |r| r.get(1))?;
+        rows.collect::<Result<_, _>>()?
+    };
+    if !root_cols.iter().any(|c| c == "present_fail_count") {
+        conn.execute_batch("ALTER TABLE storage_roots ADD COLUMN present_fail_count INTEGER NOT NULL DEFAULT 0;")?;
+    }
     conn.execute_batch(
         "CREATE INDEX IF NOT EXISTS evidence_subject ON evidence(subject_type, subject_id, field);
          CREATE INDEX IF NOT EXISTS file_roles_variant ON file_roles(variant_id);
