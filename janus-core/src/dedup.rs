@@ -28,7 +28,7 @@ pub fn plan(conn: &Connection) -> Vec<DupGroup> {
          FROM files f
          JOIN blobs b ON b.id = f.blob_id
          JOIN storage_roots r ON r.id = f.root_id
-         WHERE f.hash_state = 'full' AND f.blob_id IS NOT NULL",
+         WHERE f.hash_state = 'full' AND f.blob_id IS NOT NULL AND f.state = 'present'",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),

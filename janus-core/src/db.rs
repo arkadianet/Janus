@@ -48,6 +48,8 @@ pub fn require_schema(conn: &Connection) -> rusqlite::Result<()> {
         )?;
         if existing == 0 {
             init_schema(&tx)?;
+        } else if !schema_complete(&tx)? {
+            recover_incomplete(&tx)?;
         } else {
             migrate(&tx)?;
         }
@@ -63,7 +65,36 @@ pub fn require_schema(conn: &Connection) -> rusqlite::Result<()> {
     }
 }
 
+fn table_exists(conn: &Connection, name: &str) -> rusqlite::Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        [name],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+fn schema_complete(conn: &Connection) -> rusqlite::Result<bool> {
+    for t in ["files", "storage_roots", "blobs", "evidence", "file_roles", "model_families"] {
+        if !table_exists(conn, t)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn recover_incomplete(conn: &Connection) -> rusqlite::Result<()> {
+    if table_exists(conn, "storage_roots")? || table_exists(conn, "files")? {
+        return Err(schema_err("incomplete schema: required tables missing".into()));
+    }
+    conn.execute_batch("DROP TABLE IF EXISTS meta;")?;
+    init_schema(conn)
+}
+
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    if !table_exists(conn, "files")? || !table_exists(conn, "evidence")? || !table_exists(conn, "file_roles")? {
+        return recover_incomplete(conn);
+    }
     let cols: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(files)")?;
         let rows = stmt.query_map([], |r| r.get(1))?;

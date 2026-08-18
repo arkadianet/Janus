@@ -27,7 +27,10 @@ pub struct ScanReport {
     pub skipped_symlink_dirs: u64,
     pub skipped_non_utf8: u64,
     pub dirs_unreadable: u64,
+    pub skipped_deep: u64,
 }
+
+const MAX_WALK_DEPTH: u32 = 64;
 
 pub fn scan_root(conn: &Connection, root_id: i64, opts: &ScanOptions) -> Result<ScanReport, String> {
     let root = store::root_by_id(conn, root_id)?;
@@ -43,12 +46,13 @@ pub fn scan_root(conn: &Connection, root_id: i64, opts: &ScanOptions) -> Result<
         return Ok(report);
     }
     store::root_probe(conn, &root, now);
-    let tx = conn.unchecked_transaction().map_err(to_scan_err)?;
-    tx.execute("DROP TABLE IF EXISTS _seen", []).ok();
-    tx.execute("CREATE TEMP TABLE _seen(root_id INTEGER NOT NULL, rel TEXT NOT NULL, PRIMARY KEY(root_id, rel))", [])
+    conn.execute("DROP TABLE IF EXISTS _seen", []).ok();
+    conn.execute("CREATE TEMP TABLE _seen(root_id INTEGER NOT NULL, rel TEXT NOT NULL, PRIMARY KEY(root_id, rel))", [])
         .map_err(to_scan_err)?;
-    walk(&*tx, &root, &root_path, "", opts, &mut report);
-    reconcile_missing(&*tx, root_id, &mut report);
+    walk(conn, &root, &root_path, "", 0, opts, &mut report)?;
+    let tx = conn.unchecked_transaction().map_err(to_scan_err)?;
+    let gone = reconcile_missing(&*tx, root_id)?;
+    report.files_gone += gone;
     tx.execute("DROP TABLE IF EXISTS _seen", []).ok();
     store::root_scan_done(&*tx, root_id, now);
     tx.commit().map_err(to_scan_err)?;
@@ -59,7 +63,7 @@ fn to_scan_err(e: rusqlite::Error) -> String {
     format!("scan:{e}")
 }
 
-fn reconcile_missing(conn: &Connection, root_id: i64, report: &mut ScanReport) {
+fn reconcile_missing(conn: &Connection, root_id: i64) -> Result<u64, String> {
     let gone: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM files f
@@ -70,7 +74,7 @@ fn reconcile_missing(conn: &Connection, root_id: i64, report: &mut ScanReport) {
         )
         .unwrap_or(0);
     if gone == 0 {
-        return;
+        return Ok(0);
     }
     conn.execute(
         "UPDATE files SET state='missing', blob_id=NULL, hash_state='none'
@@ -78,22 +82,26 @@ fn reconcile_missing(conn: &Connection, root_id: i64, report: &mut ScanReport) {
             AND NOT EXISTS (SELECT 1 FROM _seen s WHERE s.root_id=?1 AND s.rel=files.rel_path)",
         [root_id],
     )
-    .ok();
+    .map_err(to_scan_err)?;
     conn.execute(
         "DELETE FROM file_roles WHERE file_id IN (
            SELECT id FROM files WHERE root_id=?1 AND state='missing')",
         [root_id],
     )
-    .ok();
-    report.files_gone += gone as u64;
+    .map_err(to_scan_err)?;
+    Ok(gone as u64)
 }
 
-fn walk(conn: &Connection, root: &store::RootRow, dir: &Path, prefix: &str, opts: &ScanOptions, report: &mut ScanReport) {
+fn walk(conn: &Connection, root: &store::RootRow, dir: &Path, prefix: &str, depth: u32, opts: &ScanOptions, report: &mut ScanReport) -> Result<(), String> {
+    if depth > MAX_WALK_DEPTH {
+        report.skipped_deep += 1;
+        return Ok(());
+    }
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => {
             report.dirs_unreadable += 1;
-            return;
+            return Ok(());
         }
     };
     for entry in entries.flatten() {
@@ -115,31 +123,33 @@ fn walk(conn: &Connection, root: &store::RootRow, dir: &Path, prefix: &str, opts
                 continue;
             }
         } else if meta.is_dir() {
-            walk(conn, root, &entry.path(), &format!("{prefix}{name}/"), opts, report);
+            walk(conn, root, &entry.path(), &format!("{prefix}{name}/"), depth + 1, opts, report)?;
             continue;
         } else if !meta.is_file() {
             continue;
         }
         let rel = format!("{prefix}{name}");
-        ingest_file(conn, root, &rel, opts, report);
+        ingest_file(conn, root, &rel, opts, report)?;
     }
+    Ok(())
 }
 
-fn ingest_file(conn: &Connection, root: &store::RootRow, rel: &str, opts: &ScanOptions, report: &mut ScanReport) {
+fn ingest_file(conn: &Connection, root: &store::RootRow, rel: &str, opts: &ScanOptions, report: &mut ScanReport) -> Result<(), String> {
     report.files_seen += 1;
-    conn.execute("INSERT OR IGNORE INTO _seen(root_id, rel) VALUES (?1, ?2)", rusqlite::params![root.id, rel]).ok();
+    conn.execute("INSERT OR IGNORE INTO _seen(root_id, rel) VALUES (?1, ?2)", rusqlite::params![root.id, rel])
+        .map_err(to_scan_err)?;
     let full = PathBuf::from(&root.path).join(rel);
     let sm = match std::fs::symlink_metadata(&full) {
         Ok(m) => m,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     let is_symlink = sm.file_type().is_symlink();
     let m = match std::fs::metadata(&full) {
         Ok(m) => m,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
     if !m.is_file() {
-        return;
+        return Ok(());
     }
     let size = m.len() as i64;
     let mtime = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs() as i64).unwrap_or(0);
@@ -210,7 +220,7 @@ fn ingest_file(conn: &Connection, root: &store::RootRow, rel: &str, opts: &ScanO
         parse_error.as_deref(),
     ) {
         Ok(id) => id,
-        Err(_) => return,
+        Err(_) => return Ok(()),
     };
 
     match existing.as_ref() {
@@ -224,6 +234,7 @@ fn ingest_file(conn: &Connection, root: &store::RootRow, rel: &str, opts: &ScanO
     if let Some(cand) = candidate {
         persist_identity(conn, file_id, &cand, blob_id, &hash_state, report);
     }
+    Ok(())
 }
 
 fn decide_hash(
@@ -239,9 +250,9 @@ fn decide_hash(
         return (None, "none".to_string());
     }
     match hash::full_hash(full) {
-        Ok((b3, s256, len)) => {
-            let partial = hash::partial_hash(full).ok().map(|(p, _)| p.to_string());
-            match store::blob_upsert(conn, &b3, Some(&s256), len as i64, partial.as_deref()) {
+        Ok((b3, s256, len, partial)) => {
+            let partial = partial.to_string();
+            match store::blob_upsert(conn, &b3, Some(&s256), len as i64, Some(&partial)) {
                 Ok(id) => (Some(id), "full".to_string()),
                 Err(_) => (None, "none".to_string()),
             }

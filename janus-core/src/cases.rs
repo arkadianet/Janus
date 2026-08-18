@@ -131,19 +131,37 @@ struct Declined {
 
 pub fn run_all(fixtures: &Path) -> Vec<CaseReport> {
     let cases_dir = fixtures.join("cases");
+    let rd = match std::fs::read_dir(&cases_dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            return vec![CaseReport {
+                id: "cases".into(),
+                title: String::new(),
+                status: Status::Fail,
+                detail: format!("read_dir:{}: {e}", cases_dir.display()),
+            }];
+        }
+    };
     let mut tomls = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(&cases_dir) {
-        for e in rd.flatten() {
-            let p = e.path();
-            if p.extension().map(|x| x == "toml").unwrap_or(false) {
-                tomls.push(p);
+    let mut reports = Vec::new();
+    for e in rd {
+        match e {
+            Ok(e) => {
+                let p = e.path();
+                if p.extension().map(|x| x == "toml").unwrap_or(false) {
+                    tomls.push(p);
+                }
             }
+            Err(e) => reports.push(CaseReport {
+                id: "cases".into(),
+                title: String::new(),
+                status: Status::Fail,
+                detail: format!("readdir entry: {e}"),
+            }),
         }
     }
     tomls.sort();
-    tomls
-        .into_iter()
-        .map(|p| {
+    reports.extend(tomls.into_iter().map(|p| {
             let id = p
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
@@ -168,8 +186,8 @@ pub fn run_all(fixtures: &Path) -> Vec<CaseReport> {
                     detail: format!("parse:{e}"),
                 },
             }
-        })
-        .collect()
+        }));
+    reports
 }
 
 fn run_one(case: &Case, fixtures: &Path) -> CaseReport {
@@ -203,7 +221,10 @@ fn run_one(case: &Case, fixtures: &Path) -> CaseReport {
     let mut second_report: Option<scan::ScanReport> = None;
     if !case.delete_after_first_scan.is_empty() {
         for rel in &case.delete_after_first_scan {
-            let _ = std::fs::remove_file(root_dir.join(rel));
+            let p = root_dir.join(rel);
+            if let Err(e) = std::fs::remove_file(&p) {
+                return report(case, Status::Fail, format!("delete {}: {e}", p.display()));
+            }
         }
         second_report = Some(match scan::scan_root(&conn, root_id, &opts) {
             Ok(r) => r,

@@ -111,9 +111,9 @@ CREATE TABLE model_variants (
 );
 
 CREATE TABLE file_roles (
-  file_id INTEGER REFERENCES files ON DELETE CASCADE,
-  variant_id INTEGER REFERENCES model_variants ON DELETE SET NULL,
-  family_id INTEGER REFERENCES model_families ON DELETE SET NULL,
+  file_id INTEGER NOT NULL REFERENCES files ON DELETE CASCADE,
+  variant_id INTEGER REFERENCES model_variants ON DELETE CASCADE,
+  family_id INTEGER REFERENCES model_families ON DELETE CASCADE,
   role TEXT,
   PRIMARY KEY (file_id)
 );

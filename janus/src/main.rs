@@ -187,8 +187,8 @@ fn cmd_scan(conn: &Connection, args: &[String]) -> i32 {
         Ok(rep) => {
             let mode = if quick { "quick" } else { "full" };
             println!(
-                "{mode} scan: seen={} new={} changed={} unsupported={} unverified={} families_new={} symlink_dirs_skipped={} dirs_unreadable={} non_utf8={} root_offline={}",
-                rep.files_seen, rep.files_new, rep.files_changed, rep.files_unsupported, rep.files_unverified, rep.families_new, rep.skipped_symlink_dirs, rep.dirs_unreadable, rep.skipped_non_utf8, rep.root_offline
+                "{mode} scan: seen={} new={} changed={} unsupported={} unverified={} families_new={} symlink_dirs_skipped={} dirs_unreadable={} non_utf8={} deep={} root_offline={}",
+                rep.files_seen, rep.files_new, rep.files_changed, rep.files_unsupported, rep.files_unverified, rep.families_new, rep.skipped_symlink_dirs, rep.dirs_unreadable, rep.skipped_non_utf8, rep.skipped_deep, rep.root_offline
             );
             0
         }
@@ -315,7 +315,7 @@ fn cmd_show(conn: &Connection, args: &[String]) -> i32 {
     }
     for v in &variants {
         let last = v
-            .last_scan_at
+            .last_file_mtime
             .map(|t| format!("last seen {}", fmt_time(t)))
             .unwrap_or_default();
         let pres = if v.present { "present" } else { "offline" };
@@ -373,7 +373,7 @@ fn cmd_identify(args: &[String]) -> i32 {
     println!("subflavour: {}", cand.subflavour.value);
     println!("publisher: {}", cand.publisher.value);
     match janus_core::hash::full_hash(p) {
-        Ok((b3, s256, size)) => {
+        Ok((b3, s256, size, _partial)) => {
             println!("sha256: {s256}");
             println!("blake3: {b3}");
             println!("size: {}", human_bytes(size as i64));

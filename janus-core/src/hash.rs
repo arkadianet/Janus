@@ -1,4 +1,3 @@
-use blake3::Hasher;
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -7,12 +6,16 @@ use xxhash_rust::xxh3;
 
 pub const PARTIAL_BYTES: usize = 64 * 1024;
 
-pub fn full_hash(path: &Path) -> std::io::Result<(String, String, u64)> {
+pub fn full_hash(path: &Path) -> std::io::Result<(String, String, u64, u64)> {
     let mut f = File::open(path)?;
     let mut hasher = blake3::Hasher::new();
     let mut sha = Sha256::new();
     let mut size = 0u64;
     let mut buf = [0u8; 1024 * 1024];
+    let mut head = Vec::with_capacity(PARTIAL_BYTES);
+    let mut tail = Vec::with_capacity(PARTIAL_BYTES * 2);
+    let mut small = Vec::new();
+    let mut keep_small = true;
     loop {
         let n = match f.read(&mut buf) {
             Ok(0) => break,
@@ -23,14 +26,36 @@ pub fn full_hash(path: &Path) -> std::io::Result<(String, String, u64)> {
         size += n as u64;
         hasher.update(&buf[..n]);
         sha.update(&buf[..n]);
+        if keep_small {
+            small.extend_from_slice(&buf[..n]);
+            if small.len() > PARTIAL_BYTES * 2 {
+                keep_small = false;
+                small.clear();
+            }
+        }
+        if head.len() < PARTIAL_BYTES {
+            let take = (PARTIAL_BYTES - head.len()).min(n);
+            head.extend_from_slice(&buf[..take]);
+        }
+        tail.extend_from_slice(&buf[..n]);
+        if tail.len() > PARTIAL_BYTES {
+            tail.drain(0..tail.len() - PARTIAL_BYTES);
+        }
     }
+    let partial = if keep_small {
+        xxh3::xxh3_64(&small)
+    } else {
+        let mut both = Vec::with_capacity(PARTIAL_BYTES * 2);
+        both.extend_from_slice(&head);
+        both.extend_from_slice(&tail);
+        xxh3::xxh3_64(&both)
+    };
     let b3 = hasher.finalize().to_hex().to_string();
     let s256 = hex::encode(sha.finalize());
-    Ok((b3, s256, size))
+    Ok((b3, s256, size, partial))
 }
 
 pub fn partial_hash(path: &Path) -> std::io::Result<(u64, u64)> {
-    let _ = Hasher::new();
     let f = File::open(path)?;
     let size = f.metadata()?.len();
     if size <= (PARTIAL_BYTES * 2) as u64 {

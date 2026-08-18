@@ -1,5 +1,6 @@
 use crate::ev::{Kind, Role};
 use std::path::Path;
+use std::sync::LazyLock;
 
 const QUANT_TAGS: &[&str] = &[
     "Q8_K",
@@ -16,9 +17,11 @@ const QUANT_TAGS: &[&str] = &[
     "Q3_K_M",
     "Q3_K_S",
     "Q3_K_L",
+    "Q2_K_S",
     "Q2_K",
     "Q6_K",
     "IQ3_XXS",
+    "IQ3_XS",
     "IQ2_XXS",
     "IQ4_NL",
     "IQ4_XS",
@@ -81,11 +84,15 @@ pub fn is_shard(file: &str) -> bool {
     shard_strip(file).is_some()
 }
 
+static SHARD_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"-\d{1,5}-of-\d{1,5}(?:-[^/]*)?$").expect("shard regex"));
+static DISPLAY_STEM_RE: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"(?i)(^|[^a-z0-9])(?:ud|a\d+b)($|[^a-z0-9])").expect("display stem regex"));
+
 pub fn shard_strip(file: &str) -> Option<String> {
     let s = stem(file);
-    let re = regex::Regex::new(r"-\d{1,5}-of-\d{1,5}(?:-[^/]*)?$").unwrap();
-    if re.is_match(&s) {
-        Some(re.replace_all(&s, "").to_string())
+    if SHARD_RE.is_match(&s) {
+        Some(SHARD_RE.replace_all(&s, "").to_string())
     } else {
         None
     }
@@ -150,8 +157,7 @@ pub fn display_stem(file: &str) -> String {
     for p in PUBLISHERS {
         s = s.replace(&p.to_lowercase(), "");
     }
-    let re = regex::Regex::new(r"(?i)(^|[^a-z0-9])(?:ud|a\d+b)($|[^a-z0-9])").unwrap();
-    s = re.replace_all(&s, "-").to_string();
+    s = DISPLAY_STEM_RE.replace_all(&s, "-").to_string();
     slug(&s)
 }
 

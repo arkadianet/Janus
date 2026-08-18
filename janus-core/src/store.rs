@@ -48,12 +48,13 @@ pub fn root_add(conn: &Connection, name: &str, path: &str, kind: &str) -> Result
             return Err("root.fetch_exists".to_string());
         }
     }
-    if conn.query_row("SELECT COUNT(*) FROM storage_roots WHERE path=?1", [path], |r| r.get::<_, i64>(0)).map_err(to_err)?
+    let new_path = abs_path(path);
+    let stored = new_path.to_string_lossy().into_owned();
+    if conn.query_row("SELECT COUNT(*) FROM storage_roots WHERE path=?1", [&stored], |r| r.get::<_, i64>(0)).map_err(to_err)?
         > 0
     {
         return Err("root.duplicate".to_string());
     }
-    let new_path = abs_path(path);
     let mut stmt = conn.prepare("SELECT path FROM storage_roots").map_err(to_err)?;
     let existing_paths = stmt
         .query_map([], |r| r.get::<_, String>(0))
@@ -71,7 +72,7 @@ pub fn root_add(conn: &Connection, name: &str, path: &str, kind: &str) -> Result
     let writable = (kind == "fetch") as i64;
     conn.execute(
         "INSERT INTO storage_roots (name, path, kind, mode, writable) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![name, path, kind, mode, writable],
+        params![name, stored, kind, mode, writable],
     )
     .map_err(to_err)?;
     Ok(conn.last_insert_rowid())
@@ -236,20 +237,12 @@ pub fn file_upsert(
         )
     } else {
         conn.execute(
-            "UPDATE files SET size=?1,mtime=?2,ctime=?3,dev=?4,ino=?5,is_symlink=?6,blob_id=?7,hash_state=?8,parse_state=?9,parse_error=?10,state='present' WHERE root_id=?11 AND rel_path=?12",
+            "UPDATE files SET size=?1,mtime=?2,ctime=?3,dev=?4,ino=?5,is_symlink=?6,symlink_target=NULL,blob_id=?7,hash_state=?8,parse_state=?9,parse_error=?10,state='present' WHERE root_id=?11 AND rel_path=?12",
             params![size, mtime, ctime, dev, ino, !regular as i64, blob_id, hash_state, parse_state, parse_error, root_id, rel],
         )
     }
     .map_err(to_err)?;
-    if conn
-        .query_row(
-            "SELECT COUNT(*) FROM files WHERE root_id=?1 AND rel_path=?2",
-            params![root_id, rel],
-            |r| r.get::<_, i64>(0),
-        )
-        .map_err(to_err)?
-        > 0
-    {
+    if _updated > 0 {
         return Ok(conn
             .query_row(
                 "SELECT id FROM files WHERE root_id=?1 AND rel_path=?2",
@@ -260,7 +253,7 @@ pub fn file_upsert(
     }
     conn.execute(
         "INSERT INTO files (root_id, rel_path, size, mtime, ctime, dev, ino, is_symlink, symlink_target, blob_id, hash_state, parse_state, parse_error, state) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,'present')",
-        params![root_id, rel, size, mtime, ctime, dev, ino, 0, symlink_target, blob_id, hash_state, parse_state, parse_error],
+        params![root_id, rel, size, mtime, ctime, dev, ino, !regular as i64, symlink_target, blob_id, hash_state, parse_state, parse_error],
     )
     .map_err(to_err)?;
     Ok(conn.last_insert_rowid())
@@ -465,7 +458,7 @@ pub fn family_list(conn: &Connection) -> Result<Vec<ListFamily>, String> {
         .map_err(to_err)?;
     let mut out = Vec::with_capacity(rows.len());
     for (id, key, name, kind, total, active, name_level, bytes) in rows {
-        let q: String = conn
+        let q: Option<String> = conn
             .query_row(
                 "SELECT GROUP_CONCAT(DISTINCT v.quant) FROM model_variants v WHERE v.family_id=?1",
                 [id],
@@ -497,7 +490,7 @@ pub fn family_list(conn: &Connection) -> Result<Vec<ListFamily>, String> {
             kind,
             params_total: total,
             params_active: active,
-            quants: q,
+            quants: q.unwrap_or_default(),
             bytes,
             roots,
         });
@@ -523,7 +516,7 @@ pub struct ShowVariant {
     pub bytes: i64,
     pub root: String,
     pub present: bool,
-    pub last_scan_at: Option<i64>,
+    pub last_file_mtime: Option<i64>,
 }
 
 pub fn family_variants(conn: &Connection, family_id: i64) -> Result<Vec<ShowVariant>, String> {
@@ -542,7 +535,7 @@ pub fn family_variants(conn: &Connection, family_id: i64) -> Result<Vec<ShowVari
                  JOIN file_roles fr ON fr.file_id=fl.id
                 WHERE fr.variant_id=v.id LIMIT 1) AS present,
                (SELECT MAX(fl.mtime) FROM file_roles fr JOIN files fl ON fl.id=fr.file_id
-                WHERE fr.variant_id=v.id) AS last_scan_at
+                WHERE fr.variant_id=v.id) AS last_file_mtime
              FROM model_variants v WHERE v.family_id=?1 ORDER BY v.quant",
         )
         .map_err(to_err)?;
@@ -555,7 +548,7 @@ pub fn family_variants(conn: &Connection, family_id: i64) -> Result<Vec<ShowVari
         .map_err(to_err)?;
     Ok(rows
         .into_iter()
-        .map(|(quant, format, subflavour, publisher, bytes, root, present, last_scan_at)| ShowVariant {
+        .map(|(quant, format, subflavour, publisher, bytes, root, present, last_file_mtime)| ShowVariant {
             quant,
             format,
             subflavour,
@@ -563,7 +556,7 @@ pub fn family_variants(conn: &Connection, family_id: i64) -> Result<Vec<ShowVari
             bytes,
             root: root.unwrap_or_default(),
             present: present == 1,
-            last_scan_at,
+            last_file_mtime,
         })
         .collect())
 }
