@@ -1,0 +1,27 @@
+name: Identity / fixture case
+description: A grouping that is wrong, or a new golden case.
+title: "[identity] "
+labels: ["identity"]
+body:
+  - type: input
+    id: case_id
+    attributes:
+      label: Case id
+      description: Existing id from docs/family-key-cases.md (F1, S1, …), or NEW
+      placeholder: NEW
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files
+      description: Names, quants, publishers, known params if you have them.
+    validations:
+      required: true
+  - type: textarea
+    id: expect
+    attributes:
+      label: Expected
+      description: One family? Apart? Unknown? have_bytes or not?
+    validations:
+      required: true

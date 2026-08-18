@@ -1,0 +1,28 @@
+name: Bug
+description: Something the specs say must work, and does not.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Phase
+      options: ["A catalogue", "B UI", "C radar", "D fetch", "docs"]
+    validations:
+      required: true
+  - type: textarea
+    id: expect
+    attributes:
+      label: Spec
+      description: Link the PRODUCT / family-key / error line that failed.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+    validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: Do not file chat, serve, convert, pickle, or indexer requests.

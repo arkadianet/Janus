@@ -1,0 +1,13 @@
+id = "H3"
+title = "Restored mtime/ino must not reuse a stale digest"
+
+[[files]]
+name = "model.gguf"
+overwrite_in_place = true
+restore_mtime = true
+restore_ino = true
+
+[expect]
+reuse_digest_from_stat_only = false
+requires = ["change_gen_match", "or_partial_hash_confirm"]
+have_bytes_with_stale_digest = false

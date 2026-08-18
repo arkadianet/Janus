@@ -1,0 +1,11 @@
+id = "U1"
+title = "Empty safetensors metadata is Unknown"
+
+[[files]]
+name = "random.safetensors"
+metadata_empty = true
+
+[expect]
+unknown = true
+searchable = true
+no_invented_family_name = true

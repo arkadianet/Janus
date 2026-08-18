@@ -1,0 +1,11 @@
+id = "M2"
+title = "Declined merge persists and does not use aliases"
+
+[given]
+declined = { family_a_key = "foo|llama|t8|a8", family_b_key = "bar|llama|t8|a8", algo_version = "1" }
+
+[expect]
+family_aliases_rows = 0
+declined_merges_rows = 1
+resweep_nags = false
+export_includes = ["declined_merges"]

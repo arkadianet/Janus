@@ -1,0 +1,30 @@
+id = "F1"
+title = "Three Qwen GGUFs are one family"
+see = "docs/family-key-cases.md"
+# Filename-only q4 ≠ Q4_K_M. Headers supply known file_type before that assert.
+header_required = true
+
+[[files]]
+name = "qwen3-coder-q4.gguf"
+path = "cache/F1/qwen3-coder-q4.gguf"
+quant_from = "header"
+expect_quant = "Q4_K_M"
+
+[[files]]
+name = "Qwen3-Coder-30B-Q5_K_M.gguf"
+path = "cache/F1/Qwen3-Coder-30B-Q5_K_M.gguf"
+quant_from = "header"
+expect_quant = "Q5_K_M"
+
+[[files]]
+name = "Qwen3-Coder-30B-Q8.gguf"
+path = "cache/F1/Qwen3-Coder-30B-Q8.gguf"
+quant_from = "header"
+expect_quant = "Q8_0"
+
+[expect]
+family_count = 1
+variant_quants = ["Q4_K_M", "Q5_K_M", "Q8_0"]
+silent_merge = true
+# silent_merge here means same family_key from known fields, not a user merge
+# Skip this case (do not assert variant_quants) if any path is missing.

@@ -1,0 +1,21 @@
+name: Later / icebox
+description: Real idea that is not the current phase.
+title: "[later] "
+labels: ["later"]
+body:
+  - type: dropdown
+    id: bucket
+    attributes:
+      label: Bucket
+      options:
+        - Later (after 1.0)
+        - Needs a PRODUCT.md change first
+        - Never (I have read the never-list and still want to argue)
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Idea
+    validations:
+      required: true
