@@ -2,8 +2,19 @@
 
 ## Unreleased
 
+### Fixed
+
+- Dedup / storage reclaimable groups by `(mount_id, dev, ino)`, not
+  `(dev, ino)` alone across volumes.
+- `root add` refuses a volume with no UUID/serial unless `.janus-root`
+  already exists or `--accept-marker` / `accept_marker` opts in.
+
 ### Added
 
+- First-run `janus` (no args) prints the three catalogue commands plus
+  `doctor`. `--help` lists every command.
+- `janus verify` and Settings (discover, cold, export/import, probe).
+- README build instructions.
 - Phase C radar (`0.3.0` work): quality profiles, monitors (variant must
   belong to the family), opt-in HF listings with on-disk cache, sweep
   rules (highest-preference publisher; cutoff scoped per revision),

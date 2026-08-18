@@ -28,6 +28,7 @@ fn is_spa(path: &str) -> bool {
         || path == "storage"
         || path == "search"
         || path == "wanted"
+        || path == "settings"
         || path.starts_with("model/")
 }
 

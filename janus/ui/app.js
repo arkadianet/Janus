@@ -47,6 +47,7 @@ function route() {
   if (path === "/storage") return renderStorage();
   if (path === "/search") return renderSearch(new URLSearchParams(location.search).get("q") || "");
   if (path === "/wanted") return renderWanted();
+  if (path === "/settings") return renderSettings();
   return renderHome();
 }
 
@@ -123,6 +124,7 @@ function rootForm() {
     <label>Path <input name="path" type="text" required placeholder="C:\\models or /home/you/models"></label>
     <label>Name <input name="name" type="text" placeholder="optional"></label>
     <label>Kind <select name="kind"><option value="internal">catalogue</option><option value="removable">removable</option><option value="nas">nas</option><option value="fetch">fetch</option></select></label>
+    <label><input type="checkbox" name="accept_marker"> Write .janus-root if this volume has no UUID</label>
     <button class="act" type="submit">Add root</button>
   </form>`;
 }
@@ -137,7 +139,7 @@ function bindRootForm() {
       await api("/api/v1/roots", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ path: fd.get("path"), name: fd.get("name") || undefined, kind: fd.get("kind") }),
+        body: JSON.stringify({ path: fd.get("path"), name: fd.get("name") || undefined, kind: fd.get("kind"), accept_marker: fd.get("accept_marker") === "on" }),
       });
       route();
     } catch (err) { main.insertAdjacentHTML("afterbegin", `<p class="warn">${esc(err.message)}</p>`); }
@@ -226,10 +228,19 @@ async function renderModel(id) {
     <h2>Provenance</h2>
     <ul>${prov || `<li class="muted">None yet</li>`}</ul>
     <p class="row"><button class="act" id="radar-fam">Radar this family</button>
+      <button class="act" id="verify-first">Verify first file</button>
       <span class="muted">Sends repo id / revision / remote file names to Hugging Face. Weights stay here.</span></p>
     <h2>Identify / merge</h2>
     <form class="row" id="merge"><input name="src" placeholder="source family"><input name="target" placeholder="target family"><button class="act">Merge</button></form>
     <form class="row" id="decline"><input name="a" placeholder="family A"><input name="b" placeholder="family B"><button class="act">Decline merge</button></form>`;
+  document.getElementById("verify-first").onclick = async () => {
+    const first = (data.files || [])[0];
+    if (!first) { alert("No files on this family."); return; }
+    try {
+      const out = await api("/api/v1/verify", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ target: String(first.id), full: true }) });
+      alert("blake3 " + (out.blake3 || "").slice(0, 16) + "…");
+    } catch (err) { alert(err.message); }
+  };
   document.getElementById("radar-fam").onclick = async () => {
     try {
       await api("/api/v1/monitors", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ family_id: f.id, profile: "daily-llm" }) });
@@ -292,7 +303,7 @@ async function renderStorage() {
   const groups = (dups.groups || []).map((g) => `<tr><td>${esc(g.blake3.slice(0, 12))}…</td><td>${human(g.size)}</td><td>${g.copies}</td><td>${g.allocations}</td><td>${human(g.reclaimable)}</td><td>${esc((g.paths || []).join(", "))}</td></tr>`).join("");
   main.innerHTML = `
     <h1>Storage</h1>
-    <p>Reclaimable uses unique (dev, ino), not size × (N−1). No delete button.</p>
+    <p>Reclaimable uses unique (mount_id, dev, ino), not size × (N−1). No delete button.</p>
     <p>Present reclaimable: <b>${human(stg.reclaimable)}</b></p>
     ${bars || `<p>No roots.</p>`}
     <h2>Duplicates</h2>
@@ -399,6 +410,82 @@ async function renderWanted() {
         });
         route();
       } catch (err) { alert(err.message); }
+    };
+  });
+}
+
+async function renderSettings() {
+  main.innerHTML = `<h1>Settings</h1><p class="muted">Loading…</p>`;
+  const [home, doctor] = await Promise.all([api("/api/v1/home"), api("/api/v1/doctor")]);
+  const findings = (doctor.findings || []).map((f) => `<li class="warn">${esc(f.code)} — ${esc(f.message)}</li>`).join("");
+  const rows = (home.roots || []).map((r) => `<tr class="${r.present ? "" : "offline"}">
+    <td>${esc(r.name)}</td><td>${esc(r.kind)}</td><td>${r.present ? "yes" : "no"}</td>
+    <td>${r.cold ? "yes" : "no"}</td><td>${esc(r.mount_id || "—")}</td><td>${esc(r.path)}</td>
+    <td class="row">
+      <button class="act" data-probe="${r.id}">Probe</button>
+      <button class="act" data-cold="${r.id}" data-on="${r.cold ? "0" : "1"}">${r.cold ? "Unmark cold" : "Mark cold"}</button>
+      <button class="act" data-rm="${r.id}">Remove</button>
+    </td>
+  </tr>`).join("");
+  main.innerHTML = `
+    <h1>Settings</h1>
+    <p>Catalogue is default. Janus will not move these files. Discovery roots stay read-only.</p>
+    ${rootForm()}
+    <div class="row">
+      <button class="act" id="discover">Discover Ollama / LM Studio / HF cache</button>
+      <button class="act" id="do-export">Export decisions</button>
+    </div>
+    <h2>Roots</h2>
+    <table><thead><tr><th>Name</th><th>Kind</th><th>Present</th><th>Cold</th><th>mount_id</th><th>Path</th><th></th></tr></thead>
+    <tbody>${rows || `<tr><td colspan="7">None yet.</td></tr>`}</tbody></table>
+    <h2>Import</h2>
+    <form class="row" id="imp"><textarea name="body" rows="6" placeholder='{"format":"janus.export",...}'></textarea><button class="act">Import</button></form>
+    ${findings ? `<h2>Doctor</h2><ul>${findings}</ul>` : ""}`;
+  bindRootForm();
+  document.getElementById("discover").onclick = async () => {
+    try { await api("/api/v1/roots/discover", { method: "POST" }); route(); }
+    catch (err) { alert(err.message); }
+  };
+  document.getElementById("do-export").onclick = async () => {
+    try {
+      const v = await api("/api/v1/export");
+      const blob = new Blob([JSON.stringify(v, null, 2)], { type: "application/json" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "janus-export.json";
+      a.click();
+    } catch (err) { alert(err.message); }
+  };
+  document.getElementById("imp").onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      await api("/api/v1/import", { method: "POST", headers: { "content-type": "application/json" }, body: new FormData(e.target).get("body") });
+      route();
+    } catch (err) { alert(err.message); }
+  };
+  main.querySelectorAll("[data-probe]").forEach((btn) => {
+    btn.onclick = async () => {
+      try { await api("/api/v1/roots/" + btn.dataset.probe + "/probe", { method: "POST" }); route(); }
+      catch (err) { alert(err.message); }
+    };
+  });
+  main.querySelectorAll("[data-cold]").forEach((btn) => {
+    btn.onclick = async () => {
+      try {
+        await api("/api/v1/roots/" + btn.dataset.cold + "/cold", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ cold: btn.dataset.on === "1" }),
+        });
+        route();
+      } catch (err) { alert(err.message); }
+    };
+  });
+  main.querySelectorAll("[data-rm]").forEach((btn) => {
+    btn.onclick = async () => {
+      if (!confirm("Remove this root from the catalogue? Files on disk stay.")) return;
+      try { await api("/api/v1/roots/" + btn.dataset.rm, { method: "DELETE" }); route(); }
+      catch (err) { alert(err.message); }
     };
   });
 }

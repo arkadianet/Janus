@@ -234,7 +234,7 @@ fn run_one(case: &Case, fixtures: &Path) -> CaseReport {
         }
     }
 
-    let root_id = match store::root_add(&conn, &case.id, root_dir.to_string_lossy().as_ref(), "internal") {
+    let root_id = match store::root_add_opts(&conn, &case.id, root_dir.to_string_lossy().as_ref(), "internal", true) {
         Ok(id) => id,
         Err(e) => return report(case, Status::Fail, format!("root:{e}")),
     };

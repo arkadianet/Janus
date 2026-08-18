@@ -21,7 +21,7 @@ you open them. One milestone per phase.
 - [x] A6 Offline presence inherited; hysteresis; cold
 - [x] A7 CLI list/search/show/storage/dedup --plan
 - [x] A8 Unknown + identify (local + persist under a known root)
-- [x] A9 export/import ([export.md](export.md)) — decisions + families; roots-by-mount_id open
+- [x] A9 export/import ([export.md](export.md)) — decisions + families; no `mount_id` requires `--accept-marker`
 - [x] A10 doctor + error codes ([errors.md](errors.md))
 - [x] A11 Discovery sources read-only (Ollama, LM Studio, HF cache)
 - [ ] A12 Golden hoard dogfood on `fedora`; freeze family_key_algo=1 (owner)

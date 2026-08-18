@@ -18,6 +18,17 @@ See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md).
 Janus is not a runtime, chat UI, Hub mirror, or torrent/`*arr` indexer
 stack.
 
+## Build
+
+```bash
+cargo test --workspace
+cargo build --release
+# binary: target/release/janus   (or target\release\janus.exe on Windows)
+```
+
+Rust 1.80+ (edition 2021). Copy [example.env](example.env) to `.env` only
+if you later opt into radar/fetch. Never commit `.env`.
+
 ## Catalogue (works offline)
 
 ```bash

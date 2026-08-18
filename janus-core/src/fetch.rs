@@ -340,7 +340,7 @@ mod tests {
     fn seed_fetch_root(c: &Connection) -> (PathBuf, i64) {
         let dir = std::env::temp_dir().join(format!("janus-fetch-root-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
         std::fs::create_dir_all(&dir).unwrap();
-        let id = store::root_add(c, "inbound", dir.to_str().unwrap(), "fetch").unwrap();
+        let id = store::root_add_opts(c, "inbound", dir.to_str().unwrap(), "fetch", true).unwrap();
         (dir, id)
     }
 
@@ -386,7 +386,7 @@ mod tests {
         let (fetch_dir, _) = seed_fetch_root(&c);
         let drawer = std::env::temp_dir().join(format!("janus-fetch-drawer-{}", std::process::id()));
         std::fs::create_dir_all(&drawer).unwrap();
-        let root = store::root_add(&c, "drawer", drawer.to_str().unwrap(), "removable").unwrap();
+        let root = store::root_add_opts(&c, "drawer", drawer.to_str().unwrap(), "removable", true).unwrap();
         c.execute("UPDATE storage_roots SET present=0 WHERE id=?1", [root]).unwrap();
         let bytes = b"owned";
         let digest = sha(bytes);

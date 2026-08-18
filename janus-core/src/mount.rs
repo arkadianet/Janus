@@ -1,5 +1,7 @@
 use std::path::Path;
 
+pub const MARKER: &str = ".janus-root";
+
 /// Real volume UUID / serial only. Never invent a fake id from the path.
 pub fn detect_mount_id(path: &Path) -> Option<String> {
     #[cfg(windows)]
@@ -15,6 +17,30 @@ pub fn detect_mount_id(path: &Path) -> Option<String> {
         let _ = path;
         None
     }
+}
+
+/// Use a detected volume id, an existing `.janus-root`, or write one if opted in.
+pub fn resolve_mount_id(path: &Path, detected: Option<String>, accept_marker: bool) -> Result<String, String> {
+    if let Some(id) = detected.filter(|s| !s.is_empty()) {
+        return Ok(id);
+    }
+    let marker = path.join(MARKER);
+    if let Ok(existing) = std::fs::read_to_string(&marker) {
+        let id = existing.trim().to_string();
+        if !id.is_empty() {
+            return Ok(id);
+        }
+    }
+    if !accept_marker {
+        return Err("root.no_mount_id".into());
+    }
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let id = blake3::hash(&nanos.to_le_bytes()).to_hex().to_string();
+    std::fs::write(&marker, format!("{id}\n")).map_err(|e| format!("root.no_mount_id: {e}"))?;
+    Ok(id)
 }
 
 #[cfg(windows)]
@@ -93,5 +119,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn missing_uuid_without_marker_is_refused() {
+        let dir = std::env::temp_dir().join(format!("janus-nomount-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let err = resolve_mount_id(&dir, None, false).unwrap_err();
+        assert_eq!(err, "root.no_mount_id");
+        assert!(!dir.join(MARKER).exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn accept_marker_writes_janus_root() {
+        let dir = std::env::temp_dir().join(format!("janus-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = resolve_mount_id(&dir, None, true).unwrap();
+        assert!(!id.is_empty());
+        assert_eq!(std::fs::read_to_string(dir.join(MARKER)).unwrap().trim(), id);
+        let again = resolve_mount_id(&dir, None, false).unwrap();
+        assert_eq!(again, id);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

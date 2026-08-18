@@ -566,7 +566,7 @@ mod tests {
         setup_monitor(&c);
         let dir = std::env::temp_dir().join(format!("janus-radar-unverified-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let root = store::root_add(&c, "models", dir.to_str().unwrap(), "internal").unwrap();
+        let root = store::root_add_opts(&c, "models", dir.to_str().unwrap(), "internal", true).unwrap();
         let sha = "33".repeat(32);
         let blob = store::blob_upsert(&c, "blake-unverified", Some(&sha), 1000, None).unwrap();
         store::file_upsert(&c, root, "Qwen-Q4_K_M.gguf", 1000, 0, 0, 0, 1, true, None, Some(blob), "none", "ok", None)
@@ -587,7 +587,7 @@ mod tests {
         setup_monitor(&c);
         let dir = std::env::temp_dir().join(format!("janus-radar-off-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let root = store::root_add(&c, "drawer", dir.to_str().unwrap(), "removable").unwrap();
+        let root = store::root_add_opts(&c, "drawer", dir.to_str().unwrap(), "removable", true).unwrap();
         store::root_set_cold(&c, root, true).unwrap();
         c.execute("UPDATE storage_roots SET present=0 WHERE id=?1", [root]).unwrap();
         let sha = "44".repeat(32);

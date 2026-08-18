@@ -183,7 +183,7 @@ mod tests {
         db::init_schema(&c).unwrap();
         let dir = std::env::temp_dir().join(format!("janus-doc-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let id = store::root_add(&c, "models", dir.to_str().unwrap(), "internal").unwrap();
+        let id = store::root_add_opts(&c, "models", dir.to_str().unwrap(), "internal", true).unwrap();
         c.execute(
             "INSERT INTO files (root_id, rel_path, size, mtime, ctime, dev, ino, is_symlink, hash_state, parse_state, state)
              VALUES (?1,'a.gguf',1,0,0,0,1,0,'none','ok','present')",

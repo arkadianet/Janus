@@ -32,7 +32,8 @@ p, label { color: var(--mute); }
 .card span { color: var(--mute); font-size: 0.85rem; }
 .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin: 0.7rem 0; }
 input, select, button.act { font: inherit; padding: 0.4rem 0.55rem; background: #100f0d; color: var(--text); border: 1px solid var(--line); }
-input[type="text"], input[type="search"] { min-width: 18rem; }
+input[type="text"], input[type="search"], textarea { min-width: 18rem; }
+textarea { width: 100%; background: #100f0d; color: var(--text); border: 1px solid var(--line); font: inherit; }
 button.act { cursor: pointer; background: #2a261d; }
 button.act:hover { border-color: var(--focus); }
 table { width: 100%; border-collapse: collapse; }

@@ -72,7 +72,7 @@ Confirm fetch (D) is not auto; fetch only on an open wanted item with a digest.
 
 - Job/progress: scan, hash, later fetch (poll or SSE).
 - `doctor` warnings (placeholders, missing fetch root, no `mount_id`).
-- Settings: roots, cold, enrichment off-by-default, later profiles.
+- Settings: roots, cold, discover, export/import, doctor. Enrichment stays off until Sweep confirm.
 
 ## Accessibility / polish bar
 

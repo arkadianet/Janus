@@ -1,7 +1,8 @@
 # CLI UX
 
-Human tables by default. `--json` on every command (same payload the UI
-will use). No color-only meaning.
+Human tables by default. `--json` on catalogue read commands (same payload
+the UI will use). No color-only meaning. `janus` with no args prints the
+three commands plus `doctor`. `janus --help` lists every command.
 
 Contract for Phase A–D. Phase A is the catalogue CLI. Phase B adds
 `janus daemon` (loopback UI + HTTP). Same `--json` payloads as `/api/v1`.

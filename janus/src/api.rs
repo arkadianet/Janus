@@ -3,7 +3,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use janus_core::{availability, doctor, fetch, hash, profile, query, radar, scan, store};
+use janus_core::{availability, doctor, export, fetch, hash, profile, query, radar, scan, store};
 use rusqlite::Connection;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -17,8 +17,12 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/api/v1/roots", get(get_roots).post(post_root))
+        .route("/api/v1/roots/discover", post(post_discover))
         .route("/api/v1/roots/{id}", delete(delete_root))
         .route("/api/v1/roots/{id}/probe", post(probe_root))
+        .route("/api/v1/roots/{id}/cold", post(post_cold))
+        .route("/api/v1/export", get(get_export))
+        .route("/api/v1/import", post(post_import))
         .route("/api/v1/scan", post(post_scan))
         .route("/api/v1/models", get(get_models))
         .route("/api/v1/models/{id}", get(get_model))
@@ -112,6 +116,12 @@ struct RootBody {
     kind: Option<String>,
     name: Option<String>,
     cold: Option<bool>,
+    accept_marker: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ColdBody {
+    cold: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -195,7 +205,8 @@ async fn post_root(State(st): State<AppState>, Json(body): Json<RootBody>) -> Re
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| body.path.clone())
     });
-    let id = store::root_add(&conn, &name, &body.path, &kind).map_err(ApiError::from_store)?;
+    let id = store::root_add_opts(&conn, &name, &body.path, &kind, body.accept_marker.unwrap_or(false))
+        .map_err(ApiError::from_store)?;
     if body.cold.unwrap_or(false) {
         store::root_set_cold(&conn, id, true).map_err(ApiError::from_store)?;
     }
@@ -208,6 +219,30 @@ async fn delete_root(State(st): State<AppState>, Path(id): Path<i64>) -> Result<
     let conn = lock(&st)?;
     store::root_rm(&conn, id).map_err(ApiError::from_store)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn post_discover(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let conn = lock(&st)?;
+    let ids = store::discover_roots(&conn).map_err(ApiError::from_store)?;
+    Ok(Json(json!({"ids": ids})))
+}
+
+async fn post_cold(State(st): State<AppState>, Path(id): Path<i64>, Json(body): Json<ColdBody>) -> Result<Json<Value>, ApiError> {
+    let conn = lock(&st)?;
+    store::root_set_cold(&conn, id, body.cold).map_err(ApiError::from_store)?;
+    Ok(Json(json!({"id": id, "cold": body.cold})))
+}
+
+async fn get_export(State(st): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let conn = lock(&st)?;
+    let v = export::export(&conn).map_err(ApiError::from_store)?;
+    Ok(Json(v))
+}
+
+async fn post_import(State(st): State<AppState>, Json(body): Json<Value>) -> Result<Json<Value>, ApiError> {
+    let conn = lock(&st)?;
+    let r = export::import(&conn, &body).map_err(ApiError::from_store)?;
+    Ok(Json(json!({"families": r.families, "aliases": r.aliases, "declined": r.declined})))
 }
 
 async fn probe_root(State(st): State<AppState>, Path(id): Path<i64>) -> Result<Json<Value>, ApiError> {
@@ -563,7 +598,7 @@ mod tests {
     #[tokio::test]
     async fn catalogue_reads_are_wired() {
         let r = app();
-        for path in ["/api/v1/roots", "/api/v1/models", "/api/v1/files", "/api/v1/storage", "/api/v1/dups", "/api/v1/search?q=x", "/api/v1/jobs", "/api/v1/profiles", "/api/v1/monitors", "/api/v1/wanted"] {
+        for path in ["/api/v1/roots", "/api/v1/models", "/api/v1/files", "/api/v1/storage", "/api/v1/dups", "/api/v1/search?q=x", "/api/v1/jobs", "/api/v1/profiles", "/api/v1/monitors", "/api/v1/wanted", "/api/v1/export"] {
             let (status, _) = call(r.clone(), Request::builder().uri(path).body(Body::empty()).unwrap()).await;
             assert_eq!(status, StatusCode::OK, "{path}");
         }
@@ -583,7 +618,7 @@ mod tests {
                 .method("POST")
                 .uri("/api/v1/roots")
                 .header("content-type", "application/json")
-                .body(Body::from(json!({"path": dir.to_string_lossy(), "name": "models"}).to_string()))
+                .body(Body::from(json!({"path": dir.to_string_lossy(), "name": "models", "accept_marker": true}).to_string()))
                 .unwrap(),
         )
         .await;
@@ -602,7 +637,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let conn = db::open(None).unwrap();
         db::init_schema(&conn).unwrap();
-        store::root_add(&conn, "models", dir.to_str().unwrap(), "internal").unwrap();
+        store::root_add_opts(&conn, "models", dir.to_str().unwrap(), "internal", true).unwrap();
         let state = AppState { db: Arc::new(Mutex::new(conn)) };
         let (status, body) = call(
             router(state),
@@ -652,7 +687,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&dir);
         let conn = db::open(None).unwrap();
         db::init_schema(&conn).unwrap();
-        store::root_add(&conn, "inbound", dir.to_str().unwrap(), "fetch").unwrap();
+        store::root_add_opts(&conn, "inbound", dir.to_str().unwrap(), "fetch", true).unwrap();
         conn.execute(
             "INSERT INTO wanted_items (remote_key, provider, repo, revision, filename, sha256, status)
              VALUES ('hf|acme/x|main|a.gguf','hf','acme/x','main','a.gguf',NULL,'open')",

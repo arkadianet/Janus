@@ -6,7 +6,11 @@ use std::path::{Path, PathBuf};
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        usage();
+        print!("{}", janus::usage::first_run());
+        return;
+    }
+    if matches!(args[1].as_str(), "--help" | "-h" | "help") {
+        print!("{}", janus::usage::help());
         return;
     }
     if args[1] == "daemon" {
@@ -29,7 +33,7 @@ fn main() {
         "identify" => cmd_identify(&conn, &args[2..]),
         "search" => cmd_search(&conn, &args[2..]),
         "merge" => cmd_merge(&conn, &args[2..]),
-        "dedup" => cmd_dedup(&conn),
+        "dedup" => cmd_dedup(&conn, &args[2..]),
         "storage" => cmd_storage(&conn, &args[2..]),
         "cold" => cmd_cold(&conn, &args[2..]),
         "doctor" => cmd_doctor(&conn, &args[2..]),
@@ -43,23 +47,18 @@ fn main() {
         "radar" => cmd_radar(&conn, &args[2..]),
         "wanted" => cmd_wanted(&conn, &args[2..]),
         "fetch" => cmd_fetch(&conn, &args[2..]),
+        "verify" => cmd_verify(&conn, &args[2..]),
         _ => {
-            usage();
+            print!("{}", janus::usage::help());
             2
         }
     };
     std::process::exit(code);
 }
 
-fn usage() {
-    println!(
-        "janus <cmd>\n  db\n  root add|ls|rm|probe|discover\n  scan [--quick] [ROOT]\n  status\n  list\n  search QUERY\n  show FAMILY\n  identify FILE [--name NAME] [--non-interactive]\n  merge SRC TARGET | --decline A B\n  dedup\n  storage\n  cold mark|unmark ID\n  doctor\n  export PATH\n  import PATH\n  profile ls|show|set\n  monitor add|ls|rm\n  radar [FAMILY...] [--once]\n  wanted [--open|--have-offline]\n  fetch ID [--force] [--file NAME] | status\n  daemon [--api 127.0.0.1:4321]\n  cases [FIXTURES_DIR]\n  have rel_path --root ID"
-    );
-}
-
 fn writes(cmd: &str, rest: &[String]) -> bool {
     match cmd {
-        "scan" | "identify" | "merge" | "import" | "cold" | "decline" | "radar" | "fetch" => true,
+        "scan" | "identify" | "merge" | "import" | "cold" | "decline" | "radar" | "fetch" | "verify" => true,
         "root" => !matches!(rest.first().map(|s| s.as_str()), Some("ls") | None),
         "profile" => matches!(rest.first().map(|s| s.as_str()), Some("set")),
         "monitor" => !matches!(rest.first().map(|s| s.as_str()), Some("ls") | None),
@@ -167,6 +166,7 @@ fn cmd_root(conn: &Connection, args: &[String]) -> i32 {
             let mut kind = "internal".to_string();
             let mut name: Option<String> = None;
             let mut cold = false;
+            let mut accept_marker = false;
             let mut i = 1;
             while i < args.len() {
                 match args[i].as_str() {
@@ -182,6 +182,10 @@ fn cmd_root(conn: &Connection, args: &[String]) -> i32 {
                         cold = true;
                         i += 1;
                     }
+                    "--accept-marker" => {
+                        accept_marker = true;
+                        i += 1;
+                    }
                     _ => break,
                 }
             }
@@ -191,7 +195,7 @@ fn cmd_root(conn: &Connection, args: &[String]) -> i32 {
                 return 2;
             }
             let name = name.unwrap_or_else(|| Path::new(&path).file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or(path.clone()));
-            match store::root_add(conn, &name, &path, &kind) {
+            match store::root_add_opts(conn, &name, &path, &kind, accept_marker) {
                 Ok(id) => {
                     if cold {
                         if let Err(e) = store::root_set_cold(conn, id, true) {
@@ -202,7 +206,12 @@ fn cmd_root(conn: &Connection, args: &[String]) -> i32 {
                     println!("added root {id} {name} {path} kind={kind} cold={cold}");
                     0
                 }
-                Err(e) => fail(&e),
+                Err(e) => {
+                    if e == "root.no_mount_id" {
+                        eprintln!("root.no_mount_id — volume has no UUID/serial. Re-run with --accept-marker to write .janus-root (opt-in).");
+                    }
+                    fail(&e)
+                }
             }
         }
         "discover" => match store::discover_roots(conn) {
@@ -264,7 +273,7 @@ fn cmd_root(conn: &Connection, args: &[String]) -> i32 {
             }
         }
         _ => {
-            usage();
+            print!("{}", janus::usage::help());
             2
         }
     }
@@ -335,30 +344,36 @@ fn cmd_status(conn: &Connection, args: &[String]) -> i32 {
 }
 
 fn cmd_list(conn: &Connection, args: &[String]) -> i32 {
-    use janus_core::identity::round1;
-    let fams = match store::family_list(conn) {
-        Ok(f) => f,
-        Err(e) => {
-            println!("error: {e}");
-            return 1;
-        }
+    let list = match query::models(conn, &query::ModelFilter::default()) {
+        Ok(v) => v,
+        Err(e) => return fail(&e),
     };
     if wants_json(args) {
-        match query::models(conn, &query::ModelFilter::default()) {
-            Ok(v) => {
-                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
-                return 0;
-            }
-            Err(e) => return fail(&e),
-        }
+        println!("{}", serde_json::to_string_pretty(&list).unwrap_or_default());
+        return 0;
     }
-    if fams.is_empty() {
+    let inferred = list.counts.families_inferred;
+    let known = list.counts.families.saturating_sub(inferred);
+    println!(
+        "{} families ({} known/manual, {} inferred)",
+        list.counts.families, known, inferred
+    );
+    if list.families.is_empty() {
         println!("no families (run: janus root add PATH && janus scan && janus list)");
         return 0;
     }
     println!("{:<28} {:<5} {:<9} {:<22} {:<10} ROOTS", "FAMILY", "KIND", "PARAMS", "VARIANTS", "SIZE");
-    for f in &fams {
-        let name = f.name.as_deref().unwrap_or(f.key.split('|').next().unwrap_or("unknown"));
+    for f in &list.families {
+        let raw = f
+            .name
+            .value
+            .as_deref()
+            .unwrap_or(f.family_key.split('|').next().unwrap_or("unknown"));
+        let name = if f.name.level == "inferred" {
+            format!("{raw}~")
+        } else {
+            raw.to_string()
+        };
         let params = match f.params_total {
             Some(t) => format!("{:>5.1}B", t),
             None => "—".to_string(),
@@ -366,21 +381,20 @@ fn cmd_list(conn: &Connection, args: &[String]) -> i32 {
         let roots: Vec<String> = f
             .roots
             .iter()
-            .map(|(n, present)| if *present { n.clone() } else { format!("[{n}]") })
+            .map(|r| if r.present { r.name.clone() } else { format!("[{}]", r.name) })
             .collect();
         let roots = roots.join(",");
         let roots = if roots.is_empty() { "—".to_string() } else { roots };
         println!(
             "{:<28} {:<5} {:<9} {:<22} {:<10} {}",
             name,
-            f.kind,
+            f.kind.value,
             params,
             short_quants(&f.quants),
             human_bytes(f.bytes),
             roots
         );
     }
-    let _ = round1;
     0
 }
 
@@ -727,7 +741,20 @@ fn cmd_import(conn: &Connection, args: &[String]) -> i32 {
     }
 }
 
-fn cmd_dedup(conn: &Connection) -> i32 {
+fn cmd_dedup(conn: &Connection, args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "--apply") {
+        eprintln!("dedup --apply is later; this build is report-only (dedup --plan)");
+        return 2;
+    }
+    if wants_json(args) {
+        match query::dups(conn) {
+            Ok(v) => {
+                println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default());
+                return 0;
+            }
+            Err(e) => return fail(&e),
+        }
+    }
     let groups = dedup::plan(conn);
     let mut files: i64 = 0;
     let mut bytes: i64 = 0;
@@ -736,14 +763,48 @@ fn cmd_dedup(conn: &Connection) -> i32 {
         bytes += g.reclaimable_bytes;
     }
     println!("duplicate groups: {}", groups.len());
-    println!("reclaimable files: {files}  reclaimable bytes: {bytes}");
+    println!("reclaimable files: {files}  reclaimable bytes: {bytes}  (unique mount_id,dev,ino)");
     for g in &groups {
         println!("{}  size={} allocations={} reclaimable={} copies={}", g.blake3, g.size, g.allocations, g.reclaimable_files, g.copies.len());
         for c in &g.copies {
-            println!("    {} {} ino={}", c.root_name, c.rel_path, c.ino);
+            let mount = c.mount_id.as_deref().unwrap_or("?");
+            println!("    {} {} mount={mount} ino={}", c.root_name, c.rel_path, c.ino);
         }
     }
     0
+}
+
+fn cmd_verify(conn: &Connection, args: &[String]) -> i32 {
+    let Some(target) = args.iter().find(|a| !a.starts_with('-')) else {
+        println!("verify: need FILE or file id");
+        return 2;
+    };
+    let path = if let Ok(id) = target.parse::<i64>() {
+        match store::file_abs_path(conn, id) {
+            Ok(p) => p,
+            Err(e) => return fail(&e),
+        }
+    } else {
+        PathBuf::from(target)
+    };
+    match janus_core::hash::full_hash(&path) {
+        Ok((b3, s256, size, _)) => {
+            match store::blob_upsert(conn, &b3, Some(&s256), size as i64, None) {
+                Ok(blob_id) => {
+                    println!("blake3={b3}");
+                    println!("sha256={s256}");
+                    println!("size={size}");
+                    println!("blob_id={blob_id}");
+                    0
+                }
+                Err(e) => fail(&e),
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            1
+        }
+    }
 }
 
 fn cmd_doctor(conn: &Connection, args: &[String]) -> i32 {

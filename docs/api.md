@@ -15,9 +15,13 @@ only SQLite writer; CLI becomes a client.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/roots` | Include `present`, `cold`, `kind`, `writable` |
-| POST | `/roots` | Body: path, kind, name, cold. Validates overlap + one fetch root |
+| POST | `/roots` | Body: path, kind, name, cold, `accept_marker`. Validates overlap + one fetch root. `root.no_mount_id` unless volume UUID or marker. |
+| POST | `/roots/discover` | Register Ollama / LM Studio / HF cache (read-only) |
 | DELETE | `/roots/{id}` | Metadata only; never deletes user files |
 | POST | `/roots/{id}/probe` | Re-check presence |
+| POST | `/roots/{id}/cold` | Body: `{ "cold": true }` |
+| GET | `/export` | Decision manifest (aliases + declined merges) |
+| POST | `/import` | Same payload as `janus import` |
 | POST | `/scan` | Body: root ids, `quick`, `no_hash`. Returns `job_id` |
 | GET | `/models` | Query: kind, family, root, offline, dups, q, limit |
 | GET | `/models/{id}` | Family + variants + files + evidence + provenance |

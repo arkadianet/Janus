@@ -41,6 +41,10 @@ pub struct BlobRow {
 }
 
 pub fn root_add(conn: &Connection, name: &str, path: &str, kind: &str) -> Result<i64, String> {
+    root_add_opts(conn, name, path, kind, false)
+}
+
+pub fn root_add_opts(conn: &Connection, name: &str, path: &str, kind: &str, accept_marker: bool) -> Result<i64, String> {
     if !ROOT_KINDS.contains(&kind) {
         return Err(format!("root.bad_kind: {kind}"));
     }
@@ -78,7 +82,8 @@ pub fn root_add(conn: &Connection, name: &str, path: &str, kind: &str) -> Result
     }
     let mode = if kind == "fetch" { "fetch" } else { "catalogue" };
     let writable = (kind == "fetch") as i64;
-    let mount_id = crate::mount::detect_mount_id(&new_path);
+    let detected = crate::mount::detect_mount_id(&new_path);
+    let mount_id = crate::mount::resolve_mount_id(&new_path, detected, accept_marker)?;
     conn.execute(
         "INSERT INTO storage_roots (name, path, kind, mode, writable, mount_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![name, stored, kind, mode, writable, mount_id],
@@ -1012,7 +1017,7 @@ pub fn discover_roots(conn: &Connection) -> Result<Vec<i64>, String> {
     for h in crate::discovery::candidates() {
         match root_add(conn, &h.name, h.path.to_string_lossy().as_ref(), "discovery") {
             Ok(id) => ids.push(id),
-            Err(e) if e == "root.overlap" || e == "root.duplicate" => {}
+            Err(e) if e == "root.overlap" || e == "root.duplicate" || e == "root.no_mount_id" => {}
             Err(e) => return Err(e),
         }
     }
@@ -1077,7 +1082,7 @@ mod tests {
         let c = mem();
         let dir = std::env::temp_dir().join(format!("janus-storage-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let id = root_add(&c, "models", dir.to_str().unwrap(), "internal").unwrap();
+        let id = root_add_opts(&c, "models", dir.to_str().unwrap(), "internal", true).unwrap();
         root_set_cold(&c, id, true).unwrap();
         root_probe(&c, &root_by_id(&c, id).unwrap(), 1);
         let rows = storage_summary(&c).unwrap();
@@ -1099,7 +1104,7 @@ mod tests {
         let c = mem();
         let dir = std::env::temp_dir().join(format!("janus-hyst-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let id = root_add(&c, "drawer", dir.to_str().unwrap(), "removable").unwrap();
+        let id = root_add_opts(&c, "drawer", dir.to_str().unwrap(), "removable", true).unwrap();
         let r = root_by_id(&c, id).unwrap();
         assert!(root_probe(&c, &r, 1));
         let _ = std::fs::remove_dir_all(&dir);
@@ -1117,7 +1122,7 @@ mod tests {
         let c = mem();
         let dir = std::env::temp_dir().join(format!("janus-id-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let id = root_add(&c, "models", dir.to_str().unwrap(), "internal").unwrap();
+        let id = root_add_opts(&c, "models", dir.to_str().unwrap(), "internal", true).unwrap();
         let path = dir.join("random.safetensors");
         std::fs::write(&path, b"not-a-real-st").unwrap();
         c.execute(
