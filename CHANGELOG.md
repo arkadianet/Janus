@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Changed
+
+- Clarified v1 (Phase A+B / 0.2.0) vs SemVer 1.0.0 (Phase D); fetch
+  suppression is verified-owned / `have_bytes` only.
+
 ### Added
 
 - Architecture and product design (`DESIGN.md`).
