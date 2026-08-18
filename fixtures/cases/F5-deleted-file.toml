@@ -1,0 +1,20 @@
+id = "F5"
+title = "Deleting a file marks it missing and detaches it from its family"
+delete_after_first_scan = ["qwen3-coder-q5.gguf"]
+
+[[files]]
+name = "qwen3-coder-q4.gguf"
+quant_from = "header"
+expect_quant = "Q4_K_M"
+
+[[files]]
+name = "qwen3-coder-q5.gguf"
+quant_from = "header"
+expect_quant = "Q5_K_M"
+
+[expect]
+family_count = 1
+files_gone = 1
+missing_rows = 1
+present_rows = 1
+variant_quants = ["Q4_K_M", "Q5_K_M"]
