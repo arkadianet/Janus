@@ -14,5 +14,7 @@
 - Specs: schema, HTTP API, CLI/UI inventory, family-key cases, fixture
   cases, golden-hoard template, example config, issue templates.
 - MIT license.
+- Golden-hoard acceptance table filled against the real `~/llm/models`
+  hoard (machine `fedora`, 2026-08-18). Offline item left open.
 
 No implementation yet. First intended tag is `0.1.0` (Phase A CLI).
