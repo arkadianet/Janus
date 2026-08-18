@@ -73,7 +73,7 @@ pub fn plan(conn: &Connection) -> Vec<DupGroup> {
             let mut allocs: Vec<(i64, i64)> = g
                 .copies
                 .iter()
-                .map(|c| (c.root_id, c.ino))
+                .map(|c| (c.dev, c.ino))
                 .collect::<std::collections::HashSet<_>>()
                 .into_iter()
                 .collect();

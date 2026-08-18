@@ -114,12 +114,54 @@ fn cmd_root(conn: &Connection, args: &[String]) -> i32 {
         }
         "ls" => cmd_root(conn, &[]),
         "rm" => {
-            let id: i64 = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(-1);
-            match conn.execute("DELETE FROM files WHERE root_id=?1", [id]).and_then(|_| conn.execute("DELETE FROM storage_roots WHERE id=?1", [id])) {
-                Ok(_) => {
-                    println!("removed root {id}");
-                    0
+            let Some(raw) = args.get(1) else {
+                println!("root rm: missing id");
+                return 2;
+            };
+            let id: i64 = match raw.parse() {
+                Ok(n) if n > 0 => n,
+                _ => {
+                    println!("root rm: invalid id");
+                    return 2;
                 }
+            };
+            if store::root_by_id(conn, id).is_err() {
+                println!("error: no such root {id}");
+                return 1;
+            }
+            let tx = match conn.unchecked_transaction() {
+                Ok(t) => t,
+                Err(e) => {
+                    println!("error: {e}");
+                    return 1;
+                }
+            };
+            if let Err(e) = tx.execute(
+                "DELETE FROM file_roles WHERE file_id IN (SELECT id FROM files WHERE root_id=?1)",
+                [id],
+            ) {
+                println!("error: {e}");
+                return 1;
+            }
+            if let Err(e) = tx.execute("DELETE FROM files WHERE root_id=?1", [id]) {
+                println!("error: {e}");
+                return 1;
+            }
+            match tx.execute("DELETE FROM storage_roots WHERE id=?1", [id]) {
+                Ok(0) => {
+                    println!("error: no such root {id}");
+                    1
+                }
+                Ok(_) => match tx.commit() {
+                    Ok(()) => {
+                        println!("removed root {id}");
+                        0
+                    }
+                    Err(e) => {
+                        println!("error: {e}");
+                        1
+                    }
+                },
                 Err(e) => {
                     println!("error: {e}");
                     1
@@ -145,8 +187,8 @@ fn cmd_scan(conn: &Connection, args: &[String]) -> i32 {
         Ok(rep) => {
             let mode = if quick { "quick" } else { "full" };
             println!(
-                "{mode} scan: seen={} new={} changed={} unsupported={} unverified={} families_new={} symlink_dirs_skipped={} root_offline={}",
-                rep.files_seen, rep.files_new, rep.files_changed, rep.files_unsupported, rep.files_unverified, rep.families_new, rep.skipped_symlink_dirs, rep.root_offline
+                "{mode} scan: seen={} new={} changed={} unsupported={} unverified={} families_new={} symlink_dirs_skipped={} dirs_unreadable={} non_utf8={} root_offline={}",
+                rep.files_seen, rep.files_new, rep.files_changed, rep.files_unsupported, rep.files_unverified, rep.families_new, rep.skipped_symlink_dirs, rep.dirs_unreadable, rep.skipped_non_utf8, rep.root_offline
             );
             0
         }
@@ -455,15 +497,23 @@ fn cmd_cases(args: &[String]) -> i32 {
 }
 
 fn cmd_have(conn: &Connection, args: &[String]) -> i32 {
-    let rel = args.iter().find(|a| !a.starts_with('-')).cloned().unwrap_or_default();
+    let mut rel = String::new();
     let mut root_id = 0i64;
     let mut i = 0;
     while i < args.len() {
         if args[i] == "--root" {
             root_id = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
-            break;
+            i += 2;
+        } else {
+            if rel.is_empty() && !args[i].starts_with('-') {
+                rel = args[i].clone();
+            }
+            i += 1;
         }
-        i += 1;
+    }
+    if rel.is_empty() {
+        println!("have: missing rel_path");
+        return 2;
     }
     let file_id: i64 = conn
         .query_row(

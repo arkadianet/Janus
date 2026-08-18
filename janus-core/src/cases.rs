@@ -141,11 +141,33 @@ pub fn run_all(fixtures: &Path) -> Vec<CaseReport> {
         }
     }
     tomls.sort();
-    tomls.into_iter()
-        .filter_map(|p| {
-            let src = std::fs::read_to_string(&p).ok()?;
-            let case: Case = toml::from_str(&src).ok()?;
-            Some(run_one(&case, fixtures))
+    tomls
+        .into_iter()
+        .map(|p| {
+            let id = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            let src = match std::fs::read_to_string(&p) {
+                Ok(s) => s,
+                Err(e) => {
+                    return CaseReport {
+                        id,
+                        title: String::new(),
+                        status: Status::Fail,
+                        detail: format!("read:{e}"),
+                    };
+                }
+            };
+            match toml::from_str::<Case>(&src) {
+                Ok(case) => run_one(&case, fixtures),
+                Err(e) => CaseReport {
+                    id,
+                    title: String::new(),
+                    status: Status::Fail,
+                    detail: format!("parse:{e}"),
+                },
+            }
         })
         .collect()
 }
@@ -373,14 +395,16 @@ fn assert_expectations(case: &Case, conn: &Connection, root_id: i64, second: Opt
     }
     if case.expect.resweep_nags {
         let nags = doctor::sweep(conn);
+        let mut declined_nagged = false;
         if let Some(d) = &case.given.declined {
             let a = &d.family_a_key;
             let b = &d.family_b_key;
             if nags.iter().any(|s| (s.a_key == *a && s.b_key == *b) || (s.a_key == *b && s.b_key == *a)) {
+                declined_nagged = true;
                 fail.push("resweep_nags want no nag for declined pair".to_string());
             }
         }
-        if !nags.is_empty() {
+        if !declined_nagged && !nags.is_empty() {
             fail.push("resweep_nags want empty sweep".to_string());
         }
     }
@@ -457,6 +481,9 @@ fn materialize_root(case: &Case, fixtures: &Path) -> Result<Option<PathBuf>, Str
         return Ok(Some(parent));
     }
     let root_dir = fixtures.join("cache").join("work").join(&case.id);
+    if root_dir.exists() {
+        std::fs::remove_dir_all(&root_dir).map_err(|e| e.to_string())?;
+    }
     std::fs::create_dir_all(&root_dir).map_err(|e| e.to_string())?;
     let mut payload: std::collections::HashMap<String, (Vec<u8>, String)> = std::collections::HashMap::new();
     for f in &case.files {
@@ -527,7 +554,11 @@ fn synthesize(f: &FiFile, basename: &str) -> Vec<u8> {
         } else {
             serde_json::json!({
                 "__metadata__": { "format": "pt", "basename": basename },
-                "model.embed_tokens.weight": { "dtype": "F32", "shape": [128, 128] }
+                "model.embed_tokens.weight": {
+                    "dtype": "F32",
+                    "shape": [128, 128],
+                    "data_offsets": [0, 65536]
+                }
             })
             .to_string()
             .into_bytes()
@@ -535,7 +566,7 @@ fn synthesize(f: &FiFile, basename: &str) -> Vec<u8> {
         let mut b: Vec<u8> = Vec::new();
         b.extend_from_slice(&(json.len() as u64).to_le_bytes());
         b.extend(json);
-        b.extend(vec![0u8; 128 * 128]);
+        b.extend(vec![0u8; 65536]);
         b
     } else {
         b"janus-fixture".to_vec()

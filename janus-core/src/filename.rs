@@ -143,13 +143,12 @@ pub fn kind_from_name(stem: &str) -> Option<Kind> {
 
 pub fn display_stem(file: &str) -> String {
     let mut s = shard_strip(file).unwrap_or_else(|| stem(file));
+    s = s.to_lowercase();
     if let Some(q) = quant_tag(&s) {
-        s = s.replace(&q, "");
+        s = s.replace(&q.to_lowercase(), "");
     }
     for p in PUBLISHERS {
-        if s.to_lowercase().contains(&p.to_lowercase()) {
-            s = s.replace(&p.to_lowercase(), "");
-        }
+        s = s.replace(&p.to_lowercase(), "");
     }
     let re = regex::Regex::new(r"(?i)(^|[^a-z0-9])(?:ud|a\d+b)($|[^a-z0-9])").unwrap();
     s = re.replace_all(&s, "-").to_string();

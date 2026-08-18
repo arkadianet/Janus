@@ -68,11 +68,6 @@ pub fn identify(file: &str, parsed: &Parsed) -> Candidate {
         filename::display_stem(file)
     };
 
-    let name_for_key = match &display_name {
-        _ if role == Role::Shard => filename::display_stem(file),
-        n => n.clone(),
-    };
-
     let quant_from_header = parsed.quant_from_header.as_ref().map(|f| (f.value.clone(), f.level));
     let quant_from_name = filename::quant_tag(&fm);
     let quant = match (&quant_from_header, quant_from_name.as_ref()) {
@@ -98,13 +93,26 @@ pub fn identify(file: &str, parsed: &Parsed) -> Candidate {
         None => filename::kind_from_name(&fm).map(Field::inferred).unwrap_or_else(|| Field::detected(Kind::Unknown)),
     };
 
-    let is_unknown = !has_known_facts && role == Role::Weights && quant_from_name.is_none();
+    let is_unknown =
+        !has_known_facts && matches!(role, Role::Weights | Role::Shard) && quant_from_name.is_none();
+
+    let (name_for_key, name_level) = if role == Role::Shard {
+        (filename::display_stem(file), Level::Inferred)
+    } else {
+        (display_name.clone(), display_name_level(parsed))
+    };
 
     let family_key = if is_unknown {
         None
     } else {
-        let total = parsed.params_total.as_ref().map(|f| f.value);
-        let active = parsed.params_active.as_ref().map(|f| f.value);
+        let (total, active) = if role == Role::Shard {
+            (None, None)
+        } else {
+            (
+                parsed.params_total.as_ref().map(|f| f.value),
+                parsed.params_active.as_ref().map(|f| f.value),
+            )
+        };
         let arch = parsed.arch.as_ref().map(|f| f.value.as_str());
         Some(family_key(&name_for_key, arch, total, active))
     };
@@ -112,7 +120,7 @@ pub fn identify(file: &str, parsed: &Parsed) -> Candidate {
     Candidate {
         role,
         format: parsed.format.clone(),
-        display_name: Field { value: name_for_key, level: display_name_level(parsed) },
+        display_name: Field { value: name_for_key, level: name_level },
         arch: parsed.arch.clone(),
         params_total: parsed.params_total.clone(),
         params_active: parsed.params_active.clone(),

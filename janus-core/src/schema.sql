@@ -38,13 +38,13 @@ CREATE TABLE blobs (
   blake3 TEXT UNIQUE,
   sha256 TEXT,
   size INTEGER NOT NULL,
-  refcount INTEGER,
+  refcount INTEGER, -- unused; live count is SELECT COUNT(*) FROM files WHERE blob_id=?
   xxhash64_partial TEXT
 );
 
 CREATE TABLE files (
   id INTEGER PRIMARY KEY,
-  root_id INTEGER NOT NULL REFERENCES storage_roots,
+  root_id INTEGER NOT NULL REFERENCES storage_roots ON DELETE CASCADE,
   rel_path TEXT NOT NULL,
   size INTEGER,
   mtime INTEGER,
@@ -111,9 +111,9 @@ CREATE TABLE model_variants (
 );
 
 CREATE TABLE file_roles (
-  file_id INTEGER REFERENCES files,
-  variant_id INTEGER REFERENCES model_variants,
-  family_id INTEGER REFERENCES model_families,
+  file_id INTEGER REFERENCES files ON DELETE CASCADE,
+  variant_id INTEGER REFERENCES model_variants ON DELETE SET NULL,
+  family_id INTEGER REFERENCES model_families ON DELETE SET NULL,
   role TEXT,
   PRIMARY KEY (file_id)
 );
@@ -236,6 +236,9 @@ CREATE INDEX blobs_sha256 ON blobs(sha256);
 CREATE INDEX families_kind ON model_families(kind);
 CREATE INDEX families_params ON model_families(params_total);
 CREATE INDEX variants_family ON model_variants(family_id);
+CREATE INDEX evidence_subject ON evidence(subject_type, subject_id, field);
+CREATE INDEX file_roles_variant ON file_roles(variant_id);
+CREATE INDEX file_roles_family ON file_roles(family_id);
 
 -- App (not SQL):
 -- * at most one fetch root (index above)

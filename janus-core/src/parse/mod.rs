@@ -2,7 +2,7 @@ pub mod gguf;
 pub mod safetensors;
 
 use crate::ev::{Field, Format, Kind, Level};
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::Path;
 
 pub struct Parsed {
@@ -62,9 +62,13 @@ fn read_prefix(path: &Path, format: &Format, cap: usize) -> Option<Vec<u8>> {
             let mut head8 = [0u8; 8];
             f.read_exact(&mut head8).ok()?;
             let len = u64::from_le_bytes(head8) as usize;
-            let need = 8 + len.min(cap);
+            let limit = crate::detect::MAX_ST_HEADER_BYTES as usize;
+            if len > limit {
+                return None;
+            }
+            let need = 8usize.checked_add(len)?;
             let mut buf = vec![0u8; need];
-            let mut f = std::fs::File::open(path).ok()?;
+            f.rewind().ok()?;
             f.read_exact(&mut buf).ok()?;
             Some(buf)
         }
@@ -102,9 +106,22 @@ fn parse_gguf(bytes: &[u8]) -> Parsed {
         Ok(kv) => {
             let txt = |v: &gguf::GgufValue| v.as_str().map(|s| s.to_string());
             let arch = kv.get("general.architecture").and_then(txt).map(|s| known(s));
-            let params_total = kv.get("__janus_params_total").and_then(|v| v.as_float()).map(known);
-            let params_active = kv.get("__janus_params_active").and_then(|v| v.as_float()).map(known);
-            let context_len = kv.get("llama.context_length").and_then(|v| v.as_uint()).map(|u| known(u as i64));
+            let params_total = kv
+                .get("__janus_params_total")
+                .and_then(|v| v.as_float())
+                .filter(|n| n.is_finite())
+                .map(known);
+            let params_active = kv
+                .get("__janus_params_active")
+                .and_then(|v| v.as_float())
+                .filter(|n| n.is_finite())
+                .map(known);
+            let context_len = arch
+                .as_ref()
+                .and_then(|a| kv.get(&format!("{}.context_length", a.value)))
+                .or_else(|| kv.get("llama.context_length"))
+                .and_then(|v| v.as_uint())
+                .map(|u| known(u as i64));
             let file_type = kv.get("general.file_type").and_then(|v| v.as_uint()).map(|u| known(u as u32));
             let quant_from_header =
                 file_type.as_ref().and_then(|f| gguf::ftype_to_quant(f.value)).map(|s| known(s.to_string()));
@@ -140,15 +157,24 @@ fn parse_safetensors(bytes: &[u8]) -> Parsed {
             if hdr.metadata.is_empty() && hdr.param_from_shapes.is_none() {
                 return no_facts(Format::Safetensors, None);
             }
-            let arch = hdr
-                .metadata
-                .get("architectures")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                .map(|s| known(s.to_string()));
-            let params_total = hdr.param_from_shapes.map(known);
-            let kind = arch.as_ref().map(|_| Field { value: Kind::Llm, level: Level::Known });
+            let arch_raw = hdr.metadata.get("architectures").and_then(|v| {
+                if let Some(s) = v.as_str() {
+                    Some(s.to_string())
+                } else if let Some(a) = v.as_array() {
+                    a.first().and_then(|x| x.as_str()).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            });
+            let arch = arch_raw.as_ref().map(|s| known(s.clone()));
+            let params_total = hdr.param_from_shapes.filter(|n| n.is_finite()).map(known);
+            let kind = match arch_raw.as_deref() {
+                Some(s) if s.to_ascii_lowercase().contains("clip") || s.to_ascii_lowercase().contains("vision") => {
+                    Some(Field::inferred(Kind::Vision))
+                }
+                Some(s) if looks_like_llm_arch(s) => Some(Field::inferred(Kind::Llm)),
+                _ => None,
+            };
             Parsed {
                 format: Format::Safetensors,
                 general_name: None,
@@ -168,6 +194,17 @@ fn parse_safetensors(bytes: &[u8]) -> Parsed {
     }
 }
 
+fn looks_like_llm_arch(s: &str) -> bool {
+    let l = s.to_ascii_lowercase();
+    l.contains("causallm")
+        || l.contains("llama")
+        || l.contains("qwen")
+        || l.contains("mistral")
+        || l.contains("gemma")
+        || l.contains("phi")
+        || l.contains("gpt")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,7 +213,7 @@ mod tests {
     fn gguf_roundtrip_from_scratch() {
         let mut b: Vec<u8> = Vec::new();
         b.extend_from_slice(b"GGUF");
-        b.extend_from_slice(&1u32.to_le_bytes());
+        b.extend_from_slice(&3u32.to_le_bytes());
         b.extend_from_slice(&0u64.to_le_bytes());
         b.extend_from_slice(&2u64.to_le_bytes());
         b.extend_from_slice(&20u64.to_le_bytes());

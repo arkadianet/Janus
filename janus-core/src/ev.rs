@@ -90,15 +90,16 @@ impl Role {
             Role::Sidecar => "sidecar",
         }
     }
-    pub fn from_str(s: &str) -> Role {
+    pub fn from_str(s: &str) -> Option<Role> {
         match s {
-            "shard" => Role::Shard,
-            "tokenizer" => Role::Tokenizer,
-            "config" => Role::Config,
-            "mmproj" => Role::Mmproj,
-            "lora" => Role::Lora,
-            "sidecar" => Role::Sidecar,
-            _ => Role::Weights,
+            "weights" => Some(Role::Weights),
+            "shard" => Some(Role::Shard),
+            "tokenizer" => Some(Role::Tokenizer),
+            "config" => Some(Role::Config),
+            "mmproj" => Some(Role::Mmproj),
+            "lora" => Some(Role::Lora),
+            "sidecar" => Some(Role::Sidecar),
+            _ => None,
         }
     }
 }

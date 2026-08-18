@@ -9,15 +9,18 @@ pub const PARTIAL_BYTES: usize = 64 * 1024;
 
 pub fn full_hash(path: &Path) -> std::io::Result<(String, String, u64)> {
     let mut f = File::open(path)?;
-    let size = f.metadata()?.len();
     let mut hasher = blake3::Hasher::new();
     let mut sha = Sha256::new();
+    let mut size = 0u64;
     let mut buf = [0u8; 1024 * 1024];
     loop {
-        let n = f.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
+        let n = match f.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        size += n as u64;
         hasher.update(&buf[..n]);
         sha.update(&buf[..n]);
     }

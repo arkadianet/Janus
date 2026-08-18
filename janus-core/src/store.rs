@@ -53,19 +53,18 @@ pub fn root_add(conn: &Connection, name: &str, path: &str, kind: &str) -> Result
     {
         return Err("root.duplicate".to_string());
     }
-    let n: i64 = conn
-        .query_row("SELECT COUNT(*) FROM storage_roots", [], |r| r.get(0))
+    let new_path = abs_path(path);
+    let mut stmt = conn.prepare("SELECT path FROM storage_roots").map_err(to_err)?;
+    let existing_paths = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(to_err)?
+        .collect::<Result<Vec<_>, _>>()
         .map_err(to_err)?;
-    if n > 0 {
-        let bad = conn.query_row::<String, _, _>(
-            "SELECT path FROM storage_roots LIMIT 50",
-            [],
-            |r| r.get(0),
-        ).map_err(to_err);
-        if let Ok(existing) = bad {
-            if path.starts_with(&existing) || existing.starts_with(path) {
-                return Err("root.overlap".to_string());
-            }
+    drop(stmt);
+    for existing in existing_paths {
+        let old_path = abs_path(&existing);
+        if new_path.starts_with(&old_path) || old_path.starts_with(&new_path) {
+            return Err("root.overlap".to_string());
         }
     }
     let mode = if kind == "fetch" { "fetch" } else { "catalogue" };
@@ -186,13 +185,21 @@ pub fn blob_upsert(
     size: i64,
     partial: Option<&str>,
 ) -> Result<i64, String> {
-    let existing: Option<i64> = conn
-        .query_row("SELECT id FROM blobs WHERE blake3=?1", [blake3], |r| r.get(0))
-        .ok();
+    let existing: Option<i64> = match conn.query_row("SELECT id FROM blobs WHERE blake3=?1", [blake3], |r| r.get(0)) {
+        Ok(id) => Some(id),
+        Err(rusqlite::Error::QueryReturnedNoRows) => None,
+        Err(e) => return Err(to_err(e)),
+    };
     match existing {
         Some(id) => {
-            conn.execute("UPDATE blobs SET size=?1 WHERE id=?2", params![size, id])
-                .map_err(to_err)?;
+            conn.execute(
+                "UPDATE blobs SET size=?1,
+                                  sha256=COALESCE(?2, sha256),
+                                  xxhash64_partial=COALESCE(?3, xxhash64_partial)
+                 WHERE id=?4",
+                params![size, sha256, partial, id],
+            )
+            .map_err(to_err)?;
             Ok(id)
         }
         None => {
@@ -386,6 +393,17 @@ pub fn is_aliased(conn: &Connection, family_a_key: &str, family_b_key: &str) -> 
         )
         .unwrap_or(0);
     n > 0
+}
+
+fn abs_path(p: &str) -> PathBuf {
+    let p = PathBuf::from(p);
+    std::fs::canonicalize(&p).unwrap_or_else(|_| {
+        if p.is_absolute() {
+            p
+        } else {
+            std::env::current_dir().map(|c| c.join(&p)).unwrap_or(p)
+        }
+    })
 }
 
 pub fn to_err(e: rusqlite::Error) -> String {
