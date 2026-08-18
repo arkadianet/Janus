@@ -266,7 +266,7 @@ fn assert_expectations(case: &Case, conn: &Connection, root_id: i64) -> Result<(
             fail.push(format!("reclaimable_inodes want {} got {got}", case.expect.reclaimable_inodes));
         }
     }
-    let mut sorted = |mut want: Vec<String>| {
+    let sorted = |mut want: Vec<String>| {
         want.sort();
         want
     };
@@ -385,9 +385,31 @@ fn assert_expectations(case: &Case, conn: &Connection, root_id: i64) -> Result<(
 fn materialize_root(case: &Case, fixtures: &Path) -> Result<Option<PathBuf>, String> {
     let real_paths: Vec<&str> = case.files.iter().filter_map(|f| f.path.as_deref()).collect();
     if !real_paths.is_empty() {
-        let all_exist = real_paths.iter().all(|p| fixtures.join(p).exists());
-        if !all_exist {
-            return Ok(None);
+        let mut payload: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
+        for f in &case.files {
+            if let Some(p) = &f.path {
+                let dest = fixtures.join(p);
+                if let Some(dir) = dest.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+                }
+                if dest.exists() {
+                    continue;
+                }
+                let bytes = match &f.same_blob {
+                    Some(tok) => payload
+                        .entry(tok.clone())
+                        .or_insert_with(|| {
+                            let base = derive_basename(&f.name);
+                            synthesize(f, &base)
+                        })
+                        .clone(),
+                    None => {
+                        let base = f.known_basename.clone().unwrap_or_else(|| derive_basename(&f.name));
+                        synthesize(f, &base)
+                    }
+                };
+                std::fs::write(&dest, &bytes).map_err(|e| e.to_string())?;
+            }
         }
         let first = fixtures.join(real_paths[0]);
         let parent = first.parent().ok_or("real path has no parent")?.to_path_buf();
@@ -437,6 +459,13 @@ fn synthesize(f: &FiFile, basename: &str) -> Vec<u8> {
         let mut kvs: Vec<(String, u32, Vec<u8>)> = Vec::new();
         let kv = |out: &mut Vec<(String, u32, Vec<u8>)>, k: &str, t: u32, v: Vec<u8>| out.push((k.to_string(), t, v));
         kv(&mut kvs, "general.architecture", 8, strv("qwen3"));
+        if f.quant_from == "header" {
+            if let Some(q) = &f.expect_quant {
+                if let Some(ft) = crate::parse::gguf::quant_to_ftype(q) {
+                    kv(&mut kvs, "general.file_type", 4, ft.to_le_bytes().to_vec());
+                }
+            }
+        }
         if !basename.is_empty() {
             kv(&mut kvs, "general.basename", 8, strv(basename));
         }
@@ -502,5 +531,7 @@ fn derive_basename(name: &str) -> String {
             s = base.to_string();
         }
     }
+    let size_re = regex::Regex::new(r"(?i)[-_](?:[0-9]+(?:\.[0-9]+)?b|a[0-9]+(?:\.[0-9]+)?b)").unwrap();
+    s = size_re.replace_all(&s, "").to_string();
     crate::filename::slug(&s)
 }

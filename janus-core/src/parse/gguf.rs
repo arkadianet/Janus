@@ -149,6 +149,41 @@ pub fn read(bytes: &[u8]) -> Result<HashMap<String, GgufValue>, String> {
     Ok(kv)
 }
 
+pub fn quant_to_ftype(quant: &str) -> Option<u32> {
+    match quant {
+        "F32" => Some(0),
+        "F16" => Some(1),
+        "Q4_0" => Some(2),
+        "Q4_1" => Some(3),
+        "Q4_1_SOME_F16" => Some(4),
+        "Q8_0" => Some(7),
+        "Q5_0" => Some(8),
+        "Q5_1" => Some(9),
+        "Q2_K" => Some(10),
+        "Q3_K_S" => Some(11),
+        "Q3_K_M" => Some(12),
+        "Q3_K_L" => Some(13),
+        "Q4_K_S" => Some(14),
+        "Q4_K_M" => Some(15),
+        "Q5_K_S" => Some(16),
+        "Q5_K_M" => Some(17),
+        "Q6_K" => Some(18),
+        "IQ2_XXS" => Some(19),
+        "IQ2_XS" => Some(20),
+        "IQ3_XXS" => Some(21),
+        "IQ1_S" => Some(22),
+        "IQ4_NL" => Some(23),
+        "IQ3_S" => Some(24),
+        "IQ3_M" => Some(25),
+        "IQ2_S" => Some(26),
+        "IQ2_M" => Some(27),
+        "IQ4_XS" => Some(28),
+        "IQ1_M" => Some(29),
+        "BF16" => Some(30),
+        _ => None,
+    }
+}
+
 pub fn ftype_to_quant(ftype: u32) -> Option<&'static str> {
     match ftype {
         0 => Some("F32"),
