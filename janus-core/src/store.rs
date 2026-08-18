@@ -1,0 +1,440 @@
+use rusqlite::{Connection, params};
+use std::path::{Path, PathBuf};
+
+pub const ROOT_KINDS: &[&str] = &["internal", "nas", "removable", "discovery", "fetch"];
+
+#[derive(Debug, Clone)]
+pub struct RootRow {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub kind: String,
+    pub mode: String,
+    pub present: Option<i64>,
+    pub cold: i64,
+    pub last_present_check: Option<i64>,
+    pub last_scan_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ExistingFile {
+    pub id: i64,
+    pub size: i64,
+    pub mtime: i64,
+    pub ctime: i64,
+    pub dev: i64,
+    pub ino: i64,
+    pub blob_id: Option<i64>,
+    pub hash_state: Option<String>,
+}
+
+pub struct BlobRow {
+    pub id: i64,
+    pub blake3: String,
+    pub sha256: Option<String>,
+    pub size: i64,
+    pub partial: Option<String>,
+}
+
+pub fn root_add(conn: &Connection, name: &str, path: &str, kind: &str) -> Result<i64, String> {
+    if !ROOT_KINDS.contains(&kind) {
+        return Err(format!("root.bad_kind: {kind}"));
+    }
+    if kind == "fetch" {
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM storage_roots WHERE kind='fetch'", [], |r| r.get(0))
+            .map_err(|e| format!("root.fetch_exists: {e}"))?;
+        if n > 0 {
+            return Err("root.fetch_exists".to_string());
+        }
+    }
+    if conn.query_row("SELECT COUNT(*) FROM storage_roots WHERE path=?1", [path], |r| r.get::<_, i64>(0)).map_err(to_err)?
+        > 0
+    {
+        return Err("root.duplicate".to_string());
+    }
+    let n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM storage_roots", [], |r| r.get(0))
+        .map_err(to_err)?;
+    if n > 0 {
+        let bad = conn.query_row::<String, _, _>(
+            "SELECT path FROM storage_roots LIMIT 50",
+            [],
+            |r| r.get(0),
+        ).map_err(to_err);
+        if let Ok(existing) = bad {
+            if path.starts_with(&existing) || existing.starts_with(path) {
+                return Err("root.overlap".to_string());
+            }
+        }
+    }
+    let mode = if kind == "fetch" { "fetch" } else { "catalogue" };
+    let writable = (kind == "fetch") as i64;
+    conn.execute(
+        "INSERT INTO storage_roots (name, path, kind, mode, writable) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![name, path, kind, mode, writable],
+    )
+    .map_err(to_err)?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn root_by_id(conn: &Connection, id: i64) -> Result<RootRow, String> {
+    let mut stmt = conn
+        .prepare("SELECT id,name,path,kind,mode,present,cold,last_present_check,last_scan_at FROM storage_roots WHERE id=?1")
+        .map_err(to_err)?;
+    let row = stmt
+        .query_row([id], |r| {
+            Ok(RootRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                path: r.get(2)?,
+                kind: r.get(3)?,
+                mode: r.get(4)?,
+                present: r.get(5)?,
+                cold: r.get(6)?,
+                last_present_check: r.get(7)?,
+                last_scan_at: r.get(8)?,
+            })
+        })
+        .map_err(to_err)?;
+    Ok(row)
+}
+
+pub fn root_ls(conn: &Connection) -> Result<Vec<RootRow>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id,name,path,kind,mode,present,cold,last_present_check,last_scan_at FROM storage_roots ORDER BY id")
+        .map_err(to_err)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(RootRow {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                path: r.get(2)?,
+                kind: r.get(3)?,
+                mode: r.get(4)?,
+                present: r.get(5)?,
+                cold: r.get(6)?,
+                last_present_check: r.get(7)?,
+                last_scan_at: r.get(8)?,
+            })
+        })
+        .map_err(to_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_err)?;
+    Ok(rows)
+}
+
+pub fn root_probe(conn: &Connection, root: &RootRow, now: i64) -> bool {
+    let present = Path::new(&root.path).is_dir();
+    conn.execute(
+        "UPDATE storage_roots SET present=?1, last_present_check=?2 WHERE id=?3",
+        params![present as i64, now, root.id],
+    )
+    .ok();
+    present
+}
+
+pub fn root_scan_done(conn: &Connection, root_id: i64, now: i64) {
+    conn.execute(
+        "UPDATE storage_roots SET last_scan_at=?1 WHERE id=?2",
+        params![now, root_id],
+    )
+    .ok();
+}
+
+pub fn file_find(conn: &Connection, root_id: i64, rel: &str) -> Option<ExistingFile> {
+    let mut stmt = conn
+        .prepare("SELECT id,size,mtime,ctime,dev,ino,blob_id,hash_state FROM files WHERE root_id=?1 AND rel_path=?2")
+        .ok()?;
+    let mut rows = stmt.query(params![root_id, rel]).ok()?;
+    match rows.next().ok()? {
+        Some(r) => Some(ExistingFile {
+            id: r.get(0).ok()?,
+            size: r.get(1).ok()?,
+            mtime: r.get(2).ok()?,
+            ctime: r.get(3).ok()?,
+            dev: r.get(4).ok()?,
+            ino: r.get(5).ok()?,
+            blob_id: r.get(6).ok()?,
+            hash_state: r.get(7).ok()?,
+        }),
+        None => None,
+    }
+}
+
+pub fn blob_find(conn: &Connection, id: i64) -> Option<BlobRow> {
+    let mut stmt = conn
+        .prepare("SELECT id,blake3,sha256,size,xxhash64_partial FROM blobs WHERE id=?1")
+        .ok()?;
+    let mut rows = stmt.query([id]).ok()?;
+    match rows.next().ok()? {
+        Some(r) => Some(BlobRow {
+            id: r.get(0).ok()?,
+            blake3: r.get(1).ok()?,
+            sha256: r.get(2).ok()?,
+            size: r.get(3).ok()?,
+            partial: r.get(4).ok()?,
+        }),
+        None => None,
+    }
+}
+
+pub fn blob_upsert(
+    conn: &Connection,
+    blake3: &str,
+    sha256: Option<&str>,
+    size: i64,
+    partial: Option<&str>,
+) -> Result<i64, String> {
+    let existing: Option<i64> = conn
+        .query_row("SELECT id FROM blobs WHERE blake3=?1", [blake3], |r| r.get(0))
+        .ok();
+    match existing {
+        Some(id) => {
+            conn.execute("UPDATE blobs SET size=?1 WHERE id=?2", params![size, id])
+                .map_err(to_err)?;
+            Ok(id)
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO blobs (blake3, sha256, size, refcount, xxhash64_partial) VALUES (?1,?2,?3,1,?4)",
+                params![blake3, sha256, size, partial],
+            )
+            .map_err(to_err)?;
+            Ok(conn.last_insert_rowid())
+        }
+    }
+}
+
+pub fn file_upsert(
+    conn: &Connection,
+    root_id: i64,
+    rel: &str,
+    size: i64,
+    mtime: i64,
+    ctime: i64,
+    dev: i64,
+    ino: i64,
+    regular: bool,
+    symlink_target: Option<&str>,
+    blob_id: Option<i64>,
+    hash_state: &str,
+    parse_state: &str,
+    parse_error: Option<&str>,
+) -> Result<i64, String> {
+    let _updated = if symlink_target.is_some() {
+        conn.execute(
+            "UPDATE files SET size=?1,mtime=?2,ctime=?3,dev=?4,ino=?5,is_symlink=1,symlink_target=?11,blob_id=?6,hash_state=?7,parse_state=?8,parse_error=?9 WHERE root_id=?10 AND rel_path=?12",
+            params![size, mtime, ctime, dev, ino, blob_id, hash_state, parse_state, parse_error, root_id, symlink_target, rel],
+        )
+    } else {
+        conn.execute(
+            "UPDATE files SET size=?1,mtime=?2,ctime=?3,dev=?4,ino=?5,is_symlink=?6,blob_id=?7,hash_state=?8,parse_state=?9,parse_error=?10 WHERE root_id=?11 AND rel_path=?12",
+            params![size, mtime, ctime, dev, ino, !regular as i64, blob_id, hash_state, parse_state, parse_error, root_id, rel],
+        )
+    }
+    .map_err(to_err)?;
+    if conn
+        .query_row(
+            "SELECT COUNT(*) FROM files WHERE root_id=?1 AND rel_path=?2",
+            params![root_id, rel],
+            |r| r.get::<_, i64>(0),
+        )
+        .map_err(to_err)?
+        > 0
+    {
+        return Ok(conn
+            .query_row(
+                "SELECT id FROM files WHERE root_id=?1 AND rel_path=?2",
+                params![root_id, rel],
+                |r| r.get(0),
+            )
+            .map_err(to_err)?);
+    }
+    conn.execute(
+        "INSERT INTO files (root_id, rel_path, size, mtime, ctime, dev, ino, is_symlink, symlink_target, blob_id, hash_state, parse_state, parse_error) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+        params![root_id, rel, size, mtime, ctime, dev, ino, 0, symlink_target, blob_id, hash_state, parse_state, parse_error],
+    )
+    .map_err(to_err)?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn family_find(conn: &Connection, key: &str) -> Option<i64> {
+    conn.query_row("SELECT id FROM model_families WHERE family_key=?1", [key], |r| r.get(0)).ok()
+}
+
+pub fn family_insert(
+    conn: &Connection,
+    key: &str,
+    name: Option<&str>,
+    arch: Option<&str>,
+    params_total: Option<f64>,
+    params_active: Option<f64>,
+    context_len: Option<i64>,
+    kind: &str,
+) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO model_families (family_key, name, arch, params_total, params_active, context_len, kind) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![key, name, arch, params_total, params_active, context_len, kind],
+    )
+    .map_err(to_err)?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn revision_find_or_insert(conn: &Connection, family_id: i64, rev_label: &str) -> Result<i64, String> {
+    if let Some(id) = conn
+        .query_row(
+            "SELECT id FROM model_revisions WHERE family_id=?1 AND rev_kind='local' AND rev_label=?2",
+            params![family_id, rev_label],
+            |r| r.get(0),
+        )
+        .ok()
+    {
+        return Ok(id);
+    }
+    conn.execute(
+        "INSERT INTO model_revisions (family_id, rev_kind, rev_label) VALUES (?1,'local',?2)",
+        params![family_id, rev_label],
+    )
+    .map_err(to_err)?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn variant_find_or_insert(
+    conn: &Connection,
+    family_id: i64,
+    revision_id: i64,
+    quant: &str,
+    quant_raw: Option<&str>,
+    format: &str,
+    subflavour: &str,
+    publisher: &str,
+) -> Result<i64, String> {
+    if let Some(id) = conn
+        .query_row(
+            "SELECT id FROM model_variants WHERE family_id=?1 AND revision_id=?2 AND format=?3 AND quant=?4 AND subflavour=?5 AND publisher=?6",
+            params![family_id, revision_id, format, quant, subflavour, publisher],
+            |r| r.get(0),
+        )
+        .ok()
+    {
+        return Ok(id);
+    }
+    conn.execute(
+        "INSERT INTO model_variants (family_id, revision_id, quant, quant_raw, format, subflavour, publisher) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+        params![family_id, revision_id, quant, quant_raw, format, subflavour, publisher],
+    )
+    .map_err(to_err)?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn file_role_put(conn: &Connection, file_id: i64, variant_id: Option<i64>, family_id: Option<i64>, role: &str) {
+    conn.execute(
+        "INSERT OR REPLACE INTO file_roles (file_id, variant_id, family_id, role) VALUES (?1,?2,?3,?4)",
+        params![file_id, variant_id, family_id, role],
+    )
+    .ok();
+}
+
+pub fn evidence_put(conn: &Connection, subject_type: &str, subject_id: i64, field: &str, value: &str, level: &str, source: &str) {
+    if value.is_empty() {
+        return;
+    }
+    conn.execute(
+        "INSERT INTO evidence (subject_type, subject_id, field, value, level, source, recorded_at) VALUES (?1,?2,?3,?4,?5,?6, strftime('%s','now'))",
+        params![subject_type, subject_id, field, value, level, source],
+    )
+    .ok();
+}
+
+pub fn declined_merge(conn: &Connection, family_a_key: &str, family_b_key: &str, algo_version: &str) -> Result<(), String> {
+    let (a, b) = if family_a_key < family_b_key {
+        (family_a_key, family_b_key)
+    } else {
+        (family_b_key, family_a_key)
+    };
+    conn.execute(
+        "INSERT OR IGNORE INTO declined_merges (family_a_key, family_b_key, algo_version, declined_at) VALUES (?1,?2,?3, strftime('%s','now'))",
+        params![a, b, algo_version],
+    )
+    .map_err(to_err)?;
+    Ok(())
+}
+
+pub fn is_declined(conn: &Connection, family_a_key: &str, family_b_key: &str, algo_version: &str) -> bool {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM declined_merges
+             WHERE algo_version=?1 AND (
+                (family_a_key=?2 AND family_b_key=?3) OR (family_a_key=?3 AND family_b_key=?2)
+             )",
+            params![algo_version, family_a_key, family_b_key],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    n > 0
+}
+
+pub fn is_aliased(conn: &Connection, family_a_key: &str, family_b_key: &str) -> bool {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM family_aliases a
+             JOIN model_families f ON f.id=a.family_id
+             WHERE (a.alias=?1 AND f.family_key=?2) OR (a.alias=?2 AND f.family_key=?1)",
+            params![family_a_key, family_b_key],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    n > 0
+}
+
+pub fn to_err(e: rusqlite::Error) -> String {
+    format!("db:{e}")
+}
+
+pub fn present_count(conn: &Connection) -> Result<(i64, i64), String> {
+    let all: i64 = conn
+        .query_row("SELECT COUNT(*) FROM storage_roots", [], |r| r.get(0))
+        .map_err(to_err)?;
+    let present: i64 = conn
+        .query_row("SELECT COUNT(*) FROM storage_roots WHERE present=1", [], |r| r.get(0))
+        .map_err(to_err)?;
+    Ok((all, present))
+}
+
+pub fn home_counts(conn: &Connection) -> Result<(i64, i64, i64, i64, i64), String> {
+    let families: i64 = conn.query_row("SELECT COUNT(*) FROM model_families", [], |r| r.get(0)).map_err(to_err)?;
+    let families_inferred: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM model_families f WHERE NOT EXISTS (SELECT 1 FROM evidence e WHERE e.subject_type='family' AND e.subject_id=f.id AND e.level IN ('known','manual') AND e.field='name')",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(to_err)?;
+    let bytes: i64 = conn
+        .query_row("SELECT COALESCE(SUM(size),0) FROM files", [], |r| r.get(0))
+        .map_err(to_err)?;
+    let unverified: i64 = conn
+        .query_row("SELECT COUNT(*) FROM files WHERE hash_state != 'full'", [], |r| r.get(0))
+        .map_err(to_err)?;
+    let unknown_files: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM files f LEFT JOIN file_roles r ON r.file_id=f.id WHERE r.file_id IS NULL AND f.parse_state='ok'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(to_err)?;
+    Ok((families, families_inferred, bytes, unverified, unknown_files))
+}
+
+pub fn db_path() -> PathBuf {
+    dirs::data_dir()
+        .map(|d| d.join("janus").join("janus.db"))
+        .unwrap_or_else(|| PathBuf::from("janus.db"))
+}
+
+pub fn cache_dir() -> PathBuf {
+    dirs::cache_dir()
+        .map(|d| d.join("janus"))
+        .unwrap_or_else(|| PathBuf::from(".cache/janus"))
+}
