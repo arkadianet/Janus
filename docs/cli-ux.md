@@ -1,10 +1,11 @@
 # CLI UX
 
-Human tables by default. `--json` on every command (same payload the UI
-will use). No color-only meaning.
+Human tables by default. `--json` on catalogue read commands (same payload
+the UI will use). No color-only meaning. `janus` with no args prints the
+three commands plus `doctor`. `janus --help` lists every command.
 
-Until a binary exists, this is the contract for Phase A–D. Phase A
-implements the catalogue block only.
+Contract for Phase A–D. Phase A is the catalogue CLI. Phase B adds
+`janus daemon` (loopback UI + HTTP). Same `--json` payloads as `/api/v1`.
 
 ## Output rules
 
@@ -50,6 +51,16 @@ abc…     20.0G   3       2       20.0G        models/a.gguf, models/copy.gguf
 
 `dedup --apply` is not Phase A.
 
+## Daemon (Phase B)
+
+```text
+$ janus daemon
+janus daemon  http://127.0.0.1:4321
+```
+
+`--api` is loopback-only unless `[daemon.expose]` auth + TLS + origins
+are all set. While the daemon is running it is the only SQLite writer.
+
 ## Identity
 
 `janus identify FILE` prints parse → hash state → optional lookup
@@ -68,6 +79,9 @@ ID  FAMILY            REV     FILE                     STATUS              NOTE
 ```
 
 `janus fetch 12` only if `sha256` is present and dest validates.
+Sweep (`janus radar --once` / UI confirm) is opt-in and prints what
+leaves the machine. `skipped_have_bytes` on an offline root is
+have-offline, not missing.
 
 ## JSON shape (shared)
 

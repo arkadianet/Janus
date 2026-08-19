@@ -1,0 +1,22 @@
+id = "R2"
+title = "Split GGUF shards are one variant"
+see = "docs/family-key-cases.md"
+
+[[files]]
+name = "gpt-oss-120b-Q4_K_M-00001-of-00003.gguf"
+role = "shard"
+known_basename = "gpt-oss-120b"
+
+[[files]]
+name = "gpt-oss-120b-Q4_K_M-00002-of-00003.gguf"
+role = "shard"
+known_basename = "gpt-oss-120b"
+
+[[files]]
+name = "gpt-oss-120b-Q4_K_M-00003-of-00003.gguf"
+role = "shard"
+known_basename = "gpt-oss-120b"
+
+[expect]
+family_count = 1
+roles = ["shard"]

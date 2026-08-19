@@ -2,6 +2,7 @@ use rusqlite::{Connection, params};
 use std::path::{Path, PathBuf};
 
 pub const ROOT_KINDS: &[&str] = &["internal", "nas", "removable", "discovery", "fetch"];
+pub const PRESENT_HYSTERESIS: i64 = 3;
 
 #[derive(Debug, Clone)]
 pub struct RootRow {
@@ -14,6 +15,9 @@ pub struct RootRow {
     pub cold: i64,
     pub last_present_check: Option<i64>,
     pub last_scan_at: Option<i64>,
+    pub mount_id: Option<String>,
+    pub writable: i64,
+    pub present_fail_count: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -37,6 +41,10 @@ pub struct BlobRow {
 }
 
 pub fn root_add(conn: &Connection, name: &str, path: &str, kind: &str) -> Result<i64, String> {
+    root_add_opts(conn, name, path, kind, false)
+}
+
+pub fn root_add_opts(conn: &Connection, name: &str, path: &str, kind: &str, accept_marker: bool) -> Result<i64, String> {
     if !ROOT_KINDS.contains(&kind) {
         return Err(format!("root.bad_kind: {kind}"));
     }
@@ -68,11 +76,17 @@ pub fn root_add(conn: &Connection, name: &str, path: &str, kind: &str) -> Result
             return Err("root.overlap".to_string());
         }
     }
+    let mut kind = kind.to_string();
+    if crate::discovery::path_is_discovery(&new_path) && kind != "fetch" {
+        kind = "discovery".to_string();
+    }
     let mode = if kind == "fetch" { "fetch" } else { "catalogue" };
     let writable = (kind == "fetch") as i64;
+    let detected = crate::mount::detect_mount_id(&new_path);
+    let mount_id = crate::mount::resolve_mount_id(&new_path, detected, accept_marker)?;
     conn.execute(
-        "INSERT INTO storage_roots (name, path, kind, mode, writable) VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![name, stored, kind, mode, writable],
+        "INSERT INTO storage_roots (name, path, kind, mode, writable, mount_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![name, stored, kind, mode, writable, mount_id],
     )
     .map_err(to_err)?;
     Ok(conn.last_insert_rowid())
@@ -80,44 +94,37 @@ pub fn root_add(conn: &Connection, name: &str, path: &str, kind: &str) -> Result
 
 pub fn root_by_id(conn: &Connection, id: i64) -> Result<RootRow, String> {
     let mut stmt = conn
-        .prepare("SELECT id,name,path,kind,mode,present,cold,last_present_check,last_scan_at FROM storage_roots WHERE id=?1")
+        .prepare("SELECT id,name,path,kind,mode,present,cold,last_present_check,last_scan_at,mount_id,writable,present_fail_count FROM storage_roots WHERE id=?1")
         .map_err(to_err)?;
     let row = stmt
-        .query_row([id], |r| {
-            Ok(RootRow {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                path: r.get(2)?,
-                kind: r.get(3)?,
-                mode: r.get(4)?,
-                present: r.get(5)?,
-                cold: r.get(6)?,
-                last_present_check: r.get(7)?,
-                last_scan_at: r.get(8)?,
-            })
-        })
+        .query_row([id], root_from_row)
         .map_err(to_err)?;
     Ok(row)
 }
 
+fn root_from_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<RootRow> {
+    Ok(RootRow {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        path: r.get(2)?,
+        kind: r.get(3)?,
+        mode: r.get(4)?,
+        present: r.get(5)?,
+        cold: r.get(6)?,
+        last_present_check: r.get(7)?,
+        last_scan_at: r.get(8)?,
+        mount_id: r.get(9)?,
+        writable: r.get(10).unwrap_or(0),
+        present_fail_count: r.get(11).unwrap_or(0),
+    })
+}
+
 pub fn root_ls(conn: &Connection) -> Result<Vec<RootRow>, String> {
     let mut stmt = conn
-        .prepare("SELECT id,name,path,kind,mode,present,cold,last_present_check,last_scan_at FROM storage_roots ORDER BY id")
+        .prepare("SELECT id,name,path,kind,mode,present,cold,last_present_check,last_scan_at,mount_id,writable,present_fail_count FROM storage_roots ORDER BY id")
         .map_err(to_err)?;
     let rows = stmt
-        .query_map([], |r| {
-            Ok(RootRow {
-                id: r.get(0)?,
-                name: r.get(1)?,
-                path: r.get(2)?,
-                kind: r.get(3)?,
-                mode: r.get(4)?,
-                present: r.get(5)?,
-                cold: r.get(6)?,
-                last_present_check: r.get(7)?,
-                last_scan_at: r.get(8)?,
-            })
-        })
+        .query_map([], |r| root_from_row(r))
         .map_err(to_err)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(to_err)?;
@@ -125,13 +132,26 @@ pub fn root_ls(conn: &Connection) -> Result<Vec<RootRow>, String> {
 }
 
 pub fn root_probe(conn: &Connection, root: &RootRow, now: i64) -> bool {
-    let present = Path::new(&root.path).is_dir();
+    if root.cold == 1 {
+        return root.present.unwrap_or(0) == 1;
+    }
+    let alive = Path::new(&root.path).is_dir();
+    if alive {
+        conn.execute(
+            "UPDATE storage_roots SET present=1, present_fail_count=0, last_present_check=?1 WHERE id=?2",
+            params![now, root.id],
+        )
+        .ok();
+        return true;
+    }
+    let fails = root.present_fail_count + 1;
+    let present = if fails >= PRESENT_HYSTERESIS { 0 } else { root.present.unwrap_or(1) };
     conn.execute(
-        "UPDATE storage_roots SET present=?1, last_present_check=?2 WHERE id=?3",
-        params![present as i64, now, root.id],
+        "UPDATE storage_roots SET present=?1, present_fail_count=?2, last_present_check=?3 WHERE id=?4",
+        params![present, fails, now, root.id],
     )
     .ok();
-    present
+    present == 1
 }
 
 pub fn root_scan_done(conn: &Connection, root_id: i64, now: i64) {
@@ -261,6 +281,156 @@ pub fn file_upsert(
 
 pub fn family_find(conn: &Connection, key: &str) -> Option<i64> {
     conn.query_row("SELECT id FROM model_families WHERE family_key=?1", [key], |r| r.get(0)).ok()
+}
+
+pub fn family_resolve(conn: &Connection, key: &str) -> Option<i64> {
+    if let Some(id) = family_find(conn, key) {
+        return Some(id);
+    }
+    conn.query_row("SELECT family_id FROM family_aliases WHERE alias=?1", [key], |r| r.get(0))
+        .ok()
+}
+
+pub fn family_key_of(conn: &Connection, id: i64) -> Option<String> {
+    conn.query_row("SELECT family_key FROM model_families WHERE id=?1", [id], |r| r.get(0))
+        .ok()
+}
+
+pub fn merge_families(conn: &Connection, src: &str, target: &str) -> Result<i64, String> {
+    let src_id = family_find_id(conn, src).ok_or_else(|| "identity.not_found".to_string())?;
+    let target_id = family_find_id(conn, target).ok_or_else(|| "identity.not_found".to_string())?;
+    if src_id == target_id {
+        return Ok(target_id);
+    }
+    let src_key = family_key_of(conn, src_id).ok_or_else(|| "identity.not_found".to_string())?;
+    let target_key = family_key_of(conn, target_id).ok_or_else(|| "identity.not_found".to_string())?;
+    let src_name: Option<String> = conn
+        .query_row("SELECT name FROM model_families WHERE id=?1", [src_id], |r| r.get(0))
+        .ok();
+    if is_declined(conn, &src_key, &target_key, crate::FAMILY_KEY_ALGO) {
+        return Err("identity.merge_declined".to_string());
+    }
+
+    reassign_revisions(conn, src_id, target_id)?;
+    reassign_variants(conn, src_id, target_id)?;
+    conn.execute(
+        "UPDATE file_roles SET family_id=?1 WHERE family_id=?2",
+        params![target_id, src_id],
+    )
+    .map_err(to_err)?;
+    conn.execute(
+        "UPDATE evidence SET subject_id=?1 WHERE subject_type='family' AND subject_id=?2",
+        params![target_id, src_id],
+    )
+    .map_err(to_err)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO family_aliases (family_id, alias, source) VALUES (?1, ?2, 'manual')",
+        params![target_id, src_key],
+    )
+    .map_err(to_err)?;
+    if let Some(name) = src_name {
+        if name != src_key {
+            conn.execute(
+                "INSERT OR IGNORE INTO family_aliases (family_id, alias, source) VALUES (?1, ?2, 'manual')",
+                params![target_id, name],
+            )
+            .map_err(to_err)?;
+        }
+    }
+    conn.execute("DELETE FROM model_families WHERE id=?1", [src_id])
+        .map_err(to_err)?;
+    Ok(target_id)
+}
+
+fn reassign_revisions(conn: &Connection, src_id: i64, target_id: i64) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare("SELECT id, rev_kind, rev_label FROM model_revisions WHERE family_id=?1")
+        .map_err(to_err)?;
+    let rows = stmt
+        .query_map([src_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })
+        .map_err(to_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_err)?;
+    drop(stmt);
+    for (rev_id, kind, label) in rows {
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM model_revisions WHERE family_id=?1 AND rev_kind=?2 AND rev_label=?3",
+                params![target_id, kind, label],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(keep) = existing {
+            conn.execute(
+                "UPDATE model_variants SET revision_id=?1 WHERE revision_id=?2",
+                params![keep, rev_id],
+            )
+            .map_err(to_err)?;
+            conn.execute("DELETE FROM model_revisions WHERE id=?1", [rev_id])
+                .map_err(to_err)?;
+        } else {
+            conn.execute(
+                "UPDATE model_revisions SET family_id=?1 WHERE id=?2",
+                params![target_id, rev_id],
+            )
+            .map_err(to_err)?;
+        }
+    }
+    Ok(())
+}
+
+fn reassign_variants(conn: &Connection, src_id: i64, target_id: i64) -> Result<(), String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, revision_id, quant, quant_raw, format, subflavour, publisher
+             FROM model_variants WHERE family_id=?1",
+        )
+        .map_err(to_err)?;
+    let rows = stmt
+        .query_map([src_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, String>(6)?,
+            ))
+        })
+        .map_err(to_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_err)?;
+    drop(stmt);
+    for (vid, revision_id, quant, _quant_raw, format, subflavour, publisher) in rows {
+        let existing: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM model_variants
+                 WHERE family_id=?1 AND revision_id=?2 AND format=?3 AND quant=?4
+                   AND subflavour=?5 AND publisher=?6",
+                params![target_id, revision_id, format, quant, subflavour, publisher],
+                |r| r.get(0),
+            )
+            .ok();
+        if let Some(keep) = existing {
+            conn.execute(
+                "UPDATE file_roles SET variant_id=?1 WHERE variant_id=?2",
+                params![keep, vid],
+            )
+            .map_err(to_err)?;
+            conn.execute("DELETE FROM model_variants WHERE id=?1", [vid])
+                .map_err(to_err)?;
+        } else {
+            conn.execute(
+                "UPDATE model_variants SET family_id=?1 WHERE id=?2",
+                params![target_id, vid],
+            )
+            .map_err(to_err)?;
+        }
+    }
+    Ok(())
 }
 
 pub fn family_insert(
@@ -499,12 +669,17 @@ pub fn family_list(conn: &Connection) -> Result<Vec<ListFamily>, String> {
 }
 
 pub fn family_find_id(conn: &Connection, name_or_key: &str) -> Option<i64> {
-    conn.query_row(
-        "SELECT id FROM model_families WHERE family_key=?1 OR name=?1 LIMIT 1",
-        [name_or_key],
-        |r| r.get(0),
-    )
-    .ok()
+    if let Some(id) = conn
+        .query_row(
+            "SELECT id FROM model_families WHERE family_key=?1 OR name=?1 LIMIT 1",
+            [name_or_key],
+            |r| r.get(0),
+        )
+        .ok()
+    {
+        return Some(id);
+    }
+    family_resolve(conn, name_or_key)
 }
 
 #[derive(Debug, Clone)]
@@ -561,6 +736,191 @@ pub fn family_variants(conn: &Connection, family_id: i64) -> Result<Vec<ShowVari
         .collect())
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StorageRow {
+    pub id: i64,
+    pub name: String,
+    pub kind: String,
+    pub present: bool,
+    pub cold: bool,
+    pub files: i64,
+    pub bytes: i64,
+    pub reclaimable: i64,
+}
+
+pub fn storage_summary(conn: &Connection) -> Result<Vec<StorageRow>, String> {
+    let roots = root_ls(conn)?;
+    let groups = crate::dedup::plan(conn);
+    let mut out = Vec::with_capacity(roots.len());
+    for r in roots {
+        let files: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files WHERE root_id=?1 AND state='present'",
+                [r.id],
+                |row| row.get(0),
+            )
+            .map_err(to_err)?;
+        let bytes: i64 = conn
+            .query_row(
+                "SELECT COALESCE(SUM(size),0) FROM files WHERE root_id=?1 AND state='present'",
+                [r.id],
+                |row| row.get(0),
+            )
+            .map_err(to_err)?;
+        let reclaimable: i64 = if r.present.unwrap_or(0) == 1 {
+            groups
+                .iter()
+                .map(|g| {
+                    let inodes: std::collections::HashSet<(i64, i64)> = g
+                        .copies
+                        .iter()
+                        .filter(|c| c.root_id == r.id)
+                        .map(|c| (c.dev, c.ino))
+                        .collect();
+                    if inodes.is_empty() {
+                        0
+                    } else {
+                        (inodes.len() as i64).saturating_sub(1) * g.size
+                    }
+                })
+                .sum()
+        } else {
+            0
+        };
+        out.push(StorageRow {
+            id: r.id,
+            name: r.name,
+            kind: r.kind,
+            present: r.present.unwrap_or(0) == 1,
+            cold: r.cold == 1,
+            files,
+            bytes,
+            reclaimable,
+        });
+    }
+    Ok(out)
+}
+
+pub fn root_rm(conn: &Connection, id: i64) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(to_err)?;
+    tx.execute(
+        "DELETE FROM file_roles WHERE file_id IN (SELECT id FROM files WHERE root_id=?1)",
+        [id],
+    )
+    .map_err(to_err)?;
+    tx.execute("DELETE FROM files WHERE root_id=?1", [id]).map_err(to_err)?;
+    let n = tx.execute("DELETE FROM storage_roots WHERE id=?1", [id]).map_err(to_err)?;
+    if n == 0 {
+        return Err("root.not_found".into());
+    }
+    tx.commit().map_err(to_err)?;
+    Ok(())
+}
+
+pub fn persist_manual_name_id(conn: &Connection, file_id: i64, name: &str) -> Result<i64, String> {
+    let (root_path, rel): (String, String) = conn
+        .query_row(
+            "SELECT r.path, f.rel_path FROM files f JOIN storage_roots r ON r.id=f.root_id WHERE f.id=?1",
+            [file_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| "identity.not_found".to_string())?;
+    let path = PathBuf::from(root_path).join(rel.replace('/', std::path::MAIN_SEPARATOR_STR));
+    persist_manual_name(conn, &path, name)
+}
+
+pub fn job_insert(conn: &Connection, kind: &str) -> Result<i64, String> {
+    conn.execute(
+        "INSERT INTO jobs (kind, state, progress, started) VALUES (?1, 'running', 0, strftime('%s','now'))",
+        [kind],
+    )
+    .map_err(to_err)?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn job_finish(conn: &Connection, id: i64, state: &str, progress: f64, error: Option<&str>) -> Result<(), String> {
+    conn.execute(
+        "UPDATE jobs SET state=?1, progress=?2, finished=strftime('%s','now'), error_json=?3 WHERE id=?4",
+        params![state, progress, error, id],
+    )
+    .map_err(to_err)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct JobRow {
+    pub id: i64,
+    pub kind: String,
+    pub state: String,
+    pub progress: Option<f64>,
+    pub started: Option<i64>,
+    pub finished: Option<i64>,
+    pub error: Option<String>,
+}
+
+pub fn job_get(conn: &Connection, id: i64) -> Result<JobRow, String> {
+    conn.query_row(
+        "SELECT id, COALESCE(kind,''), COALESCE(state,''), progress, started, finished, error_json FROM jobs WHERE id=?1",
+        [id],
+        |r| {
+            Ok(JobRow {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                state: r.get(2)?,
+                progress: r.get(3)?,
+                started: r.get(4)?,
+                finished: r.get(5)?,
+                error: r.get(6)?,
+            })
+        },
+    )
+    .map_err(|_| "identity.not_found".to_string())
+}
+
+pub fn job_list(conn: &Connection, limit: usize) -> Result<Vec<JobRow>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, COALESCE(kind,''), COALESCE(state,''), progress, started, finished, error_json
+             FROM jobs ORDER BY id DESC LIMIT ?1",
+        )
+        .map_err(to_err)?;
+    let rows = stmt
+        .query_map([limit as i64], |r| {
+            Ok(JobRow {
+                id: r.get(0)?,
+                kind: r.get(1)?,
+                state: r.get(2)?,
+                progress: r.get(3)?,
+                started: r.get(4)?,
+                finished: r.get(5)?,
+                error: r.get(6)?,
+            })
+        })
+        .map_err(to_err)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(to_err)
+}
+
+pub fn file_abs_path(conn: &Connection, file_id: i64) -> Result<PathBuf, String> {
+    let (root_path, rel): (String, String) = conn
+        .query_row(
+            "SELECT r.path, f.rel_path FROM files f JOIN storage_roots r ON r.id=f.root_id WHERE f.id=?1",
+            [file_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|_| "identity.not_found".to_string())?;
+    Ok(PathBuf::from(root_path).join(rel.replace('/', std::path::MAIN_SEPARATOR_STR)))
+}
+
+pub fn root_set_cold(conn: &Connection, id: i64, cold: bool) -> Result<(), String> {
+    let n = conn
+        .execute("UPDATE storage_roots SET cold=?1 WHERE id=?2", params![cold as i64, id])
+        .map_err(to_err)?;
+    if n == 0 {
+        return Err("root.not_found".to_string());
+    }
+    Ok(())
+}
+
 pub fn home_counts(conn: &Connection) -> Result<(i64, i64, i64, i64, i64), String> {
     let families: i64 = conn.query_row("SELECT COUNT(*) FROM model_families", [], |r| r.get(0)).map_err(to_err)?;
     let families_inferred: i64 = conn
@@ -586,6 +946,84 @@ pub fn home_counts(conn: &Connection) -> Result<(i64, i64, i64, i64, i64), Strin
     Ok((families, families_inferred, bytes, unverified, unknown_files))
 }
 
+pub fn family_for_blob(conn: &Connection, blob_id: i64) -> Option<i64> {
+    conn.query_row(
+        "SELECT COALESCE(v.family_id, fr.family_id) FROM file_roles fr
+         JOIN files f ON f.id=fr.file_id
+         LEFT JOIN model_variants v ON v.id=fr.variant_id
+         WHERE f.blob_id=?1 AND (v.family_id IS NOT NULL OR fr.family_id IS NOT NULL)
+         LIMIT 1",
+        [blob_id],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
+pub fn provenance_put(
+    conn: &Connection,
+    subject_type: &str,
+    subject_id: i64,
+    event: &str,
+    source_kind: &str,
+    repo: Option<&str>,
+    revision: Option<&str>,
+) {
+    conn.execute(
+        "INSERT INTO provenance_entries (subject_type, subject_id, event, source_kind, repo, revision, at)
+         VALUES (?1,?2,?3,?4,?5,?6, strftime('%s','now'))",
+        params![subject_type, subject_id, event, source_kind, repo, revision],
+    )
+    .ok();
+}
+
+pub fn root_containing(conn: &Connection, path: &Path) -> Option<RootRow> {
+    let abs = abs_path(&path.to_string_lossy());
+    for r in root_ls(conn).ok()? {
+        if abs.starts_with(Path::new(&r.path)) {
+            return Some(r);
+        }
+    }
+    None
+}
+
+pub fn persist_manual_name(conn: &Connection, path: &Path, name: &str) -> Result<i64, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("identity.not_found".into());
+    }
+    let root = root_containing(conn, path).ok_or_else(|| "root.not_found".to_string())?;
+    let abs = abs_path(&path.to_string_lossy());
+    let rel = abs
+        .strip_prefix(&root.path)
+        .map_err(|_| "root.not_found".to_string())?
+        .to_string_lossy()
+        .replace('\\', "/");
+    let file = file_find(conn, root.id, &rel).ok_or_else(|| "identity.not_found".to_string())?;
+    let key = crate::identity::family_key(name, None, None, None);
+    let family_id = match family_resolve(conn, &key) {
+        Some(id) => id,
+        None => family_insert(conn, &key, Some(name), None, None, None, None, "unknown")?,
+    };
+    evidence_put(conn, "family", family_id, "name", name, "manual", "user");
+    let rev = revision_find_or_insert(conn, family_id, "local:none")?;
+    let vid = variant_find_or_insert(conn, family_id, rev, "unknown", None, "unknown", "unknown", "unknown")?;
+    file_role_put(conn, file.id, Some(vid), Some(family_id), "weights");
+    Ok(family_id)
+}
+
+pub fn discover_roots(conn: &Connection) -> Result<Vec<i64>, String> {
+    let mut ids = Vec::new();
+    for h in crate::discovery::candidates() {
+        match root_add(conn, &h.name, h.path.to_string_lossy().as_ref(), "discovery") {
+            Ok(id) => ids.push(id),
+            Err(e) if e == "root.overlap" || e == "root.duplicate" || e == "root.no_mount_id" => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(ids)
+}
+
 pub fn db_path() -> PathBuf {
     dirs::data_dir()
         .map(|d| d.join("janus").join("janus.db"))
@@ -596,4 +1034,114 @@ pub fn cache_dir() -> PathBuf {
     dirs::cache_dir()
         .map(|d| d.join("janus"))
         .unwrap_or_else(|| PathBuf::from(".cache/janus"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+
+    fn mem() -> Connection {
+        let c = db::open(None).unwrap();
+        db::init_schema(&c).unwrap();
+        c
+    }
+
+    fn seed_pair(c: &Connection) -> (i64, i64) {
+        let a = family_insert(c, "foo|llama|t8|a8", Some("Foo"), Some("llama"), Some(8.0), Some(8.0), None, "llm").unwrap();
+        let b = family_insert(c, "bar|llama|t8|a8", Some("Bar"), Some("llama"), Some(8.0), Some(8.0), None, "llm").unwrap();
+        (a, b)
+    }
+
+    #[test]
+    fn merge_writes_alias_and_drops_src_family() {
+        let c = mem();
+        let (_a, b) = seed_pair(&c);
+        let got = merge_families(&c, "Foo", "Bar").unwrap();
+        assert_eq!(got, b);
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM model_families", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+        let aliases: i64 = c.query_row("SELECT COUNT(*) FROM family_aliases", [], |r| r.get(0)).unwrap();
+        assert_eq!(aliases, 2);
+        assert_eq!(family_resolve(&c, "foo|llama|t8|a8"), Some(b));
+        assert_eq!(family_find_id(&c, "foo|llama|t8|a8"), Some(b));
+        assert_eq!(family_find_id(&c, "Foo"), Some(b));
+    }
+
+    #[test]
+    fn merge_refuses_declined_pair() {
+        let c = mem();
+        seed_pair(&c);
+        declined_merge(&c, "foo|llama|t8|a8", "bar|llama|t8|a8", crate::FAMILY_KEY_ALGO).unwrap();
+        let err = merge_families(&c, "Foo", "Bar").unwrap_err();
+        assert_eq!(err, "identity.merge_declined");
+    }
+
+    #[test]
+    fn storage_summary_lists_roots_and_cold_flag() {
+        let c = mem();
+        let dir = std::env::temp_dir().join(format!("janus-storage-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = root_add_opts(&c, "models", dir.to_str().unwrap(), "internal", true).unwrap();
+        root_set_cold(&c, id, true).unwrap();
+        root_probe(&c, &root_by_id(&c, id).unwrap(), 1);
+        let rows = storage_summary(&c).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "models");
+        assert!(rows[0].cold);
+        assert_eq!(rows[0].reclaimable, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cold_unknown_root_is_not_found() {
+        let c = mem();
+        assert_eq!(root_set_cold(&c, 99, true).unwrap_err(), "root.not_found");
+    }
+
+    #[test]
+    fn hysteresis_needs_n_failures() {
+        let c = mem();
+        let dir = std::env::temp_dir().join(format!("janus-hyst-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = root_add_opts(&c, "drawer", dir.to_str().unwrap(), "removable", true).unwrap();
+        let r = root_by_id(&c, id).unwrap();
+        assert!(root_probe(&c, &r, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+        for i in 0..PRESENT_HYSTERESIS - 1 {
+            let r = root_by_id(&c, id).unwrap();
+            assert!(root_probe(&c, &r, 10 + i), "still present after fail {}", i + 1);
+        }
+        let r = root_by_id(&c, id).unwrap();
+        assert!(!root_probe(&c, &r, 99));
+        assert_eq!(root_by_id(&c, id).unwrap().present, Some(0));
+    }
+
+    #[test]
+    fn identify_persists_manual_name_under_root() {
+        let c = mem();
+        let dir = std::env::temp_dir().join(format!("janus-id-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = root_add_opts(&c, "models", dir.to_str().unwrap(), "internal", true).unwrap();
+        let path = dir.join("random.safetensors");
+        std::fs::write(&path, b"not-a-real-st").unwrap();
+        c.execute(
+            "INSERT INTO files (root_id, rel_path, size, mtime, ctime, dev, ino, is_symlink, hash_state, parse_state, state)
+             VALUES (?1,'random.safetensors',13,0,0,0,1,0,'none','ok','present')",
+            [id],
+        )
+        .unwrap();
+        let fid = persist_manual_name(&c, &path, "MyModel").unwrap();
+        let name: String = c.query_row("SELECT name FROM model_families WHERE id=?1", [fid], |r| r.get(0)).unwrap();
+        assert_eq!(name, "MyModel");
+        let level: String = c
+            .query_row(
+                "SELECT level FROM evidence WHERE subject_type='family' AND subject_id=?1 AND field='name'",
+                [fid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(level, "manual");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

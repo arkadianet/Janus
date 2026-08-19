@@ -24,6 +24,7 @@ CREATE TABLE storage_roots (
   last_scan_at INTEGER,
   cold INTEGER NOT NULL DEFAULT 0,
   writable INTEGER NOT NULL DEFAULT 0,
+  present_fail_count INTEGER NOT NULL DEFAULT 0,
   CHECK (
     (kind = 'fetch' AND mode = 'fetch' AND writable = 1) OR
     (kind != 'fetch' AND mode = 'catalogue' AND writable = 0)

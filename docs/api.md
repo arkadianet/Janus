@@ -15,9 +15,13 @@ only SQLite writer; CLI becomes a client.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/roots` | Include `present`, `cold`, `kind`, `writable` |
-| POST | `/roots` | Body: path, kind, name, cold. Validates overlap + one fetch root |
+| POST | `/roots` | Body: path, kind, name, cold, `accept_marker`. Validates overlap + one fetch root. `root.no_mount_id` unless volume UUID or marker. |
+| POST | `/roots/discover` | Register Ollama / LM Studio / HF cache (read-only) |
 | DELETE | `/roots/{id}` | Metadata only; never deletes user files |
 | POST | `/roots/{id}/probe` | Re-check presence |
+| POST | `/roots/{id}/cold` | Body: `{ "cold": true }` |
+| GET | `/export` | Decision manifest (aliases + declined merges) |
+| POST | `/import` | Same payload as `janus import` |
 | POST | `/scan` | Body: root ids, `quick`, `no_hash`. Returns `job_id` |
 | GET | `/models` | Query: kind, family, root, offline, dups, q, limit |
 | GET | `/models/{id}` | Family + variants + files + evidence + provenance |
@@ -28,6 +32,8 @@ only SQLite writer; CLI becomes a client.
 | GET | `/dups` | Plan only in v1 |
 | GET | `/jobs/{id}` | Progress |
 | GET | `/jobs` | Recent |
+| GET | `/home` | Same counts as `janus status --json` (composed, not a second engine) |
+| GET | `/doctor` | Findings + merge suggestions |
 
 No `/ingest`. Scan and (later) fetch are the only ways bytes enter.
 
@@ -45,8 +51,8 @@ No `/ingest`. Scan and (later) fetch are the only ways bytes enter.
 |---|---|---|
 | GET/PUT | `/profiles` | |
 | GET/POST/DELETE | `/monitors` | variant must belong to family |
-| POST | `/radar` | Sweep; upserts `wanted_items` on `remote_key` |
-| GET | `/wanted` | Query: status |
+| POST | `/radar` | Sweep; requires `{ "opt_in": true }`. Upserts `wanted_items` on `remote_key`. No download. |
+| GET | `/wanted` | Query: status, open, have-offline. Includes `privacy_notice`. |
 
 ## Fetch (Phase D)
 

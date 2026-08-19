@@ -1,0 +1,15 @@
+id = "R4"
+title = "LoRA next to a base is a role, not a family"
+see = "docs/family-key-cases.md"
+
+[[files]]
+name = "qwen3-coder-30b-q4.gguf"
+role = "weights"
+
+[[files]]
+name = "qwen3-coder-30b-lora.safetensors"
+role = "lora"
+
+[expect]
+family_count = 1
+roles = ["lora", "weights"]

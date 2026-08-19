@@ -9,15 +9,16 @@ Law: [PRODUCT.md](PRODUCT.md) (done) · [DESIGN.md](DESIGN.md) (how) ·
 
 ---
 
-## Now — Loop 0 (docs)
+## Now — Phase D work in tree
 
-Specified. No crate yet.
+Catalogue CLI + loopback daemon/UI + radar + fetch work. Public tags
+wait on golden-hoard dogfood on `fedora`. Do not invent those results.
 
 - [x] Architecture (`DESIGN.md`)
-- [ ] v1 sheet + golden-hoard notes filled with *your* paths
+- [x] v1 sheet + golden-hoard notes filled (`~/llm/models` on `fedora`)
 - [x] License, security note, example config
 - [x] CLI / UI / API / schema / family-key case specs
-- [ ] Tiny public header fixtures on disk (download when coding starts)
+- [x] Synthetic header fixtures (F1 etc.); real tiny public blobs still optional
 
 ---
 
@@ -70,6 +71,8 @@ Profiles, monitors, wanted / have-offline. No download.
 | Ownership | Unverified / `--quick` files do not satisfy `have_bytes` |
 | Privacy | Sweep is opt-in; UI names what leaves the machine |
 
+Unit tests cover these. Golden-hoard radar dogfood on `fedora` is owner-only.
+
 **Public milestone:** `0.3.0` — Wanted tab, still read-only.
 
 ---
@@ -85,6 +88,8 @@ One wanted item → fetch root → verify → ingest.
 | Already owned | Verified blob (incl. offline) refuses without `--force` |
 | Restart | Existing dest with matching SHA-256 marked fetched, not overwritten |
 | Atomicity | Stage under `<fetch-root>/.janus-partial/`, then fsync + rename |
+
+Unit tests cover these. Golden-hoard fetch dogfood on `fedora` is owner-only.
 
 **Public milestone:** SemVer `1.0.0` — two-faced Janus (radar + fetch).
 Not the PRODUCT.md “v1” sheet (that is Phase A+B / `0.2.0`). Still not a

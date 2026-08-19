@@ -1,0 +1,20 @@
+id = "R1"
+title = "Sharded safetensors plus index.json are one variant"
+see = "docs/family-key-cases.md"
+
+[[files]]
+name = "model-00001-of-00002.safetensors"
+role = "shard"
+
+[[files]]
+name = "model-00002-of-00002.safetensors"
+role = "shard"
+
+[[files]]
+name = "model.safetensors.index.json"
+role = "config"
+json = "{\"metadata\":{\"total_size\":1},\"weight_map\":{}}"
+
+[expect]
+family_count = 1
+roles = ["config", "shard"]

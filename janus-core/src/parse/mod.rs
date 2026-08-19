@@ -1,4 +1,6 @@
+pub mod config;
 pub mod gguf;
+pub mod onnx;
 pub mod safetensors;
 
 use crate::ev::{Field, Format, Kind, Level};
@@ -72,6 +74,11 @@ fn read_prefix(path: &Path, format: &Format, cap: usize) -> Option<Vec<u8>> {
             f.read_exact(&mut buf).ok()?;
             Some(buf)
         }
+        Format::Onnx | Format::Diffusers => {
+            let mut buf = Vec::new();
+            f.take(cap as u64).read_to_end(&mut buf).ok()?;
+            Some(buf)
+        }
         _ => {
             let mut buf = Vec::new();
             f.take(cap as u64).read_to_end(&mut buf).ok()?;
@@ -84,6 +91,9 @@ pub fn parse_bytes(bytes: &[u8], format: &Format) -> Parsed {
     match format {
         Format::Gguf => parse_gguf(bytes),
         Format::Safetensors => parse_safetensors(bytes),
+        Format::Onnx => parse_onnx(bytes),
+        Format::Diffusers => parse_diffusers(bytes),
+        Format::Pytorch => no_facts(Format::Pytorch, Some("pickle_refused".to_string())),
         _ => Parsed {
             format: format.clone(),
             general_name: None,
@@ -101,6 +111,64 @@ pub fn parse_bytes(bytes: &[u8], format: &Format) -> Parsed {
     }
 }
 
+fn parse_onnx(bytes: &[u8]) -> Parsed {
+    match onnx::read(bytes) {
+        Ok(info) => {
+            let name = info.producer.clone();
+            Parsed {
+                format: Format::Onnx,
+                general_name: name.as_ref().map(|s| known(s.clone())),
+                basename: None,
+                finetune: None,
+                arch: None,
+                params_total: None,
+                params_active: None,
+                context_len: None,
+                file_type: None,
+                quant_from_header: None,
+                kind: Some(Field { value: Kind::Unknown, level: Level::Detected }),
+                parse_error: None,
+            }
+        }
+        Err(e) => no_facts(Format::Onnx, Some(e)),
+    }
+}
+
+fn parse_diffusers(bytes: &[u8]) -> Parsed {
+    let v: serde_json::Value = match serde_json::from_slice(bytes) {
+        Ok(v) => v,
+        Err(_) => return no_facts(Format::Diffusers, Some("diffusers: bad json".into())),
+    };
+    let class = v.get("_class_name").and_then(|x| x.as_str()).map(|s| s.to_string());
+    Parsed {
+        format: Format::Diffusers,
+        general_name: class.map(known),
+        basename: None,
+        finetune: None,
+        arch: None,
+        params_total: None,
+        params_active: None,
+        context_len: None,
+        file_type: None,
+        quant_from_header: None,
+        kind: Some(Field { value: Kind::Diffusion, level: Level::Detected }),
+        parse_error: None,
+    }
+}
+
+pub fn apply_config(parsed: &mut Parsed, cfg: &config::ConfigJson) {
+    if parsed.basename.is_none() {
+        if let Some(n) = &cfg.name {
+            parsed.basename = Some(Field::inferred(n.clone()));
+        }
+    }
+    if parsed.arch.is_none() {
+        if let Some(a) = cfg.arch.as_ref().or(cfg.model_type.as_ref()) {
+            parsed.arch = Some(Field::inferred(a.clone()));
+        }
+    }
+}
+
 fn parse_gguf(bytes: &[u8]) -> Parsed {
     match gguf::read(bytes) {
         Ok(kv) => {
@@ -109,8 +177,8 @@ fn parse_gguf(bytes: &[u8]) -> Parsed {
             let params_total = kv
                 .get("__janus_params_total")
                 .and_then(|v| v.as_float())
-                .filter(|n| n.is_finite())
-                .map(known);
+                .filter(|n| n.is_finite() && *n > 0.0)
+                .map(|n| known(if n >= 1_000_000.0 { n / 1e9 } else { n }));
             let params_active = kv
                 .get("__janus_params_active")
                 .and_then(|v| v.as_float())
@@ -167,7 +235,10 @@ fn parse_safetensors(bytes: &[u8]) -> Parsed {
                 }
             });
             let arch = arch_raw.as_ref().map(|s| known(s.clone()));
-            let params_total = hdr.param_from_shapes.filter(|n| n.is_finite()).map(known);
+            let params_total = hdr
+                .param_from_shapes
+                .filter(|n| n.is_finite() && *n > 0.0)
+                .map(|n| known(if n >= 1_000_000.0 { n / 1e9 } else { n }));
             let kind = match arch_raw.as_deref() {
                 Some(s) if s.to_ascii_lowercase().contains("clip") || s.to_ascii_lowercase().contains("vision") => {
                     Some(Field::inferred(Kind::Vision))
@@ -230,5 +301,71 @@ mod tests {
         assert_eq!(p.arch.as_ref().map(|f| f.value.as_str()), Some("qwen3"));
         assert_eq!(p.quant_from_header.as_ref().map(|f| f.value.as_str()), Some("Q4_K_M"));
         assert_eq!(p.kind.as_ref().map(|k| k.value), Some(Kind::Llm));
+    }
+
+    #[test]
+    fn pytorch_never_unpickles() {
+        let p = parse_bytes(b"\x80\x02some-pickle", &Format::Pytorch);
+        assert_eq!(p.parse_error.as_deref(), Some("pickle_refused"));
+    }
+
+    fn put_str(b: &mut Vec<u8>, s: &str) {
+        b.extend_from_slice(&(s.len() as u64).to_le_bytes());
+        b.extend_from_slice(s.as_bytes());
+    }
+
+    fn put_kv_str(b: &mut Vec<u8>, key: &str, val: &str) {
+        put_str(b, key);
+        b.extend_from_slice(&8u32.to_le_bytes());
+        put_str(b, val);
+    }
+
+    fn put_kv_u32(b: &mut Vec<u8>, key: &str, val: u32) {
+        put_str(b, key);
+        b.extend_from_slice(&4u32.to_le_bytes());
+        b.extend_from_slice(&val.to_le_bytes());
+    }
+
+    fn put_kv_u8_array(b: &mut Vec<u8>, key: &str, n: u64) {
+        put_str(b, key);
+        b.extend_from_slice(&9u32.to_le_bytes());
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(&n.to_le_bytes());
+        b.resize(b.len() + n as usize, 0);
+    }
+
+    #[test]
+    fn gguf_huge_tokenizer_array_still_returns_basename_arch() {
+        let mut b: Vec<u8> = Vec::new();
+        b.extend_from_slice(b"GGUF");
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&4u64.to_le_bytes());
+        put_kv_u8_array(&mut b, "tokenizer.ggml.tokens", 8192);
+        put_kv_str(&mut b, "general.architecture", "llama");
+        put_kv_str(&mut b, "general.basename", "kimi-k2");
+        put_kv_u32(&mut b, "general.file_type", 15);
+        let p = parse_bytes(&b, &Format::Gguf);
+        assert_eq!(p.parse_error, None, "skipable tokenizer array must not abort the header");
+        assert_eq!(p.arch.as_ref().map(|f| f.value.as_str()), Some("llama"));
+        assert_eq!(p.basename.as_ref().map(|f| f.value.as_str()), Some("kimi-k2"));
+        assert_eq!(p.file_type.as_ref().map(|f| f.value), Some(15));
+    }
+
+    #[test]
+    fn gguf_truncated_tokenizer_keeps_earlier_arch() {
+        let mut b: Vec<u8> = Vec::new();
+        b.extend_from_slice(b"GGUF");
+        b.extend_from_slice(&3u32.to_le_bytes());
+        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&3u64.to_le_bytes());
+        put_kv_str(&mut b, "general.architecture", "qwen3");
+        put_kv_str(&mut b, "general.basename", "qwen3-8b");
+        put_kv_u8_array(&mut b, "tokenizer.ggml.tokens", 200_000);
+        b.truncate(256);
+        let p = parse_bytes(&b, &Format::Gguf);
+        assert_eq!(p.parse_error, None, "truncated skipable array must keep prior keys");
+        assert_eq!(p.arch.as_ref().map(|f| f.value.as_str()), Some("qwen3"));
+        assert_eq!(p.basename.as_ref().map(|f| f.value.as_str()), Some("qwen3-8b"));
     }
 }

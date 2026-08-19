@@ -3,9 +3,10 @@
 Local-first library for the AI model files you already own. A second face
 can watch providers and fetch what you are actually missing.
 
-**Status:** architecture and product specs only. There is no `janus`
-binary yet. See [PRODUCT.md](PRODUCT.md) for what v1 means and
-[ROADMAP.md](ROADMAP.md) for phases.
+**Status:** Phase A–D work in tree (catalogue, loopback UI, radar,
+fetch). Not tagged `0.2.0` / `0.3.0` / `1.0.0` until the owner runs the
+handwritten [golden hoard](docs/golden-hoard.md) checkboxes on `fedora`.
+See [PRODUCT.md](PRODUCT.md) and [ROADMAP.md](ROADMAP.md).
 
 - **Catalogue** (Plex): scan messy folders and drives, including ones that
   are unplugged. Group by family / revision / variant. Say what is known
@@ -17,7 +18,18 @@ binary yet. See [PRODUCT.md](PRODUCT.md) for what v1 means and
 Janus is not a runtime, chat UI, Hub mirror, or torrent/`*arr` indexer
 stack.
 
-## When a binary exists
+## Build
+
+```bash
+cargo test --workspace
+cargo build --release
+# binary: target/release/janus   (or target\release\janus.exe on Windows)
+```
+
+Rust 1.80+ (edition 2021). Copy [example.env](example.env) to `.env` only
+if you later opt into radar/fetch. Never commit `.env`.
+
+## Catalogue (works offline)
 
 ```bash
 janus root add ~/models
@@ -25,8 +37,26 @@ janus scan
 janus list
 ```
 
-Network is not required for those three. Gated fetch later may use a
-token: copy [example.env](example.env) to `.env` (never commit it).
+Same questions in the browser:
+
+```bash
+janus daemon
+# open http://127.0.0.1:4321
+```
+
+Network is not required for those. Radar and gated fetch are opt-in
+and may use a token: copy [example.env](example.env) to `.env` (never
+commit it). `HF_TOKEN` is read from the environment only after you
+opt in.
+
+```bash
+janus profile ls
+janus monitor add FAMILY --profile daily-llm
+janus radar --once          # lists remote files; does not download
+janus wanted
+janus root add --kind fetch ~/models/inbound
+janus fetch WANTED_ID
+```
 
 ## Docs
 

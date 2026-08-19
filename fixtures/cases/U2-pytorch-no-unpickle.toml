@@ -1,0 +1,14 @@
+id = "U2"
+title = "PyTorch weights are never unpickled"
+see = "docs/family-key-cases.md"
+
+[[files]]
+name = "random.pth"
+parse_state = "unsupported"
+parse_error = "pickle_refused"
+
+[expect]
+unknown = true
+searchable = true
+no_invented_family_name = true
+pickle_refused = true

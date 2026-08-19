@@ -81,6 +81,23 @@ A mock `present=0` is implemented as a **unit test**. It does not satisfy
 PRODUCT item 6, which requires a real unplug/mount of a removable root. The
 checkbox stays off until that run happens.
 
+## How to dogfood (owner)
+
+This agent cannot see `~/llm/models` on `fedora`. Do not invent scan
+results. Run these yourself and tick the handwritten tables above.
+
+```bash
+cargo test --workspace          # includes fixture_cases_pass
+cargo run -p janus -- cases     # same goldens via the CLI
+janus root add ~/llm/models
+janus root discover             # Ollama / LM Studio / HF cache if present
+janus scan                      # all present roots; does not move files
+janus list
+janus doctor
+```
+
+`family_key_algo=1` is frozen in `janus-core`. Changing it is a migration.
+
 ## After scan (trust checks)
 
 - [ ] Folders on catalogue roots have no new Janus files (unless you opted
@@ -90,3 +107,78 @@ checkbox stays off until that run happens.
 - [ ] Discovery roots were not written.
 
 Date filled: 2026-08-18  Machine: fedora
+
+## Windows dogfood (filled 2026-08-19, machine `Chace` / win32)
+
+Catalogue-only. No fetch. No `.janus-root` markers written (D: has a
+volume serial). Discovery root was not written.
+
+### Roots added
+
+| Name | Path | Kind | Notes |
+|---|---|---|---|
+| ollama | `D:\LocalAI\OllamaModels` (`OLLAMA_MODELS`) | discovery | 53 blobs + 13 manifests. Large blobs are GGUF v3. Never written. |
+| Models | `D:\LocalAI\Models` | internal | Kimi-K2 Instruct + Thinking Unsloth `UD-TQ1_0` shards (~365 GB). |
+| ComfyUI | `D:\LocalAI\ComfyUI\models` | internal | Flux.1 schnell + CLIP-L + T5-XXL + Flux VAE safetensors. |
+
+Not present on this PC: HF cache, LM Studio models dir,
+`C:\Users\Chace\.ollama\models` blobs (empty; env points at D:),
+`E:\Archive\Models` (empty folder — not registered).
+
+`janus root discover` registered ollama only. Volume UUID present; no
+`--accept-marker`. Overlap/permission errors: none.
+
+### `janus scan --quick` (19s)
+
+| Root | seen | unsupported | unverified | families_new |
+|---|---|---|---|---|
+| ollama | 66 | 66 | 13 | 0 |
+| Models | 24 | 15 | 24 | 2 |
+| ComfyUI | 42 | 38 | 42 | 4 |
+
+Status: 6 families (all name-inferred), **1.59 TB** indexed, 79 files
+not full-hashed, 0 unattached content-role names, 3/3 roots present.
+
+Ollama GGUF blobs fail header parse (`gguf: array too large` — tokenizer
+arrays over the 4096 cap) so they stay unsupported; manifests are not
+models. Filename `sha256-<hex>` is trusted as a full digest (no rehash).
+
+Kimi GGUF shards hit the same header cap; families still appear from
+**filename**. Doctor suggested merging Instruct ↔ Thinking (shared
+tokens, score 1.00) — those must stay apart.
+
+### Catalogue (`janus list`)
+
+| Display name | Kind | Notes |
+|---|---|---|
+| kimi-k2-instruct-tq1-0~ | unknown | 5 shards, 180.7G, Models. Quant leaked into family name. |
+| kimi-k2-thinking-tq1-0~ | unknown | 6 shards, 183.7G, Models. Distinct from Instruct. |
+| flux1-schnell~ | unknown | 22.1G, ComfyUI unet. |
+| t5xxl-fp8-e4m3fn~ | unknown | 4.6G, ComfyUI clip. |
+| clip-l~ | unknown | 234.7M, ComfyUI clip. |
+| flux-vae~ | unknown | 159.9M, BF16, ComfyUI vae. |
+
+`list` PARAMS column prints raw counts as `N.0B` (e.g. CLIP-L
+`123060480.0B`) — display bug, not a second family.
+
+### Ollama library on disk (not in `list` — parse unsupported)
+
+`deepseek-r1/70b`, `deepseek-v3`, `gpt-oss`, `llama3.1/8b`,
+`llama4/maverick`, `llama4/scout`, `nemotron-3-nano/30b`,
+`nemotron-3-super`, `qwen2.5-coder` 7b/14b/32b, `qwen3` 8b/235b.
+
+Largest blobs (GGUF magic): 377G, 228G, 132G, 81G, 63G, 40G, 23G, 18G.
+
+### README three commands
+
+`janus root add PATH` / `janus scan` / `janus list` work on this PC
+(debug `target\debug\janus.exe`). `--quick` populated the family table
+in 19s. Full `janus scan` (BLAKE3+SHA-256 of the ~365 GB Kimi shards)
+was still running after 4h at ~40 MB/s on D: — leave it; do not kill.
+
+### Windows bug found this pass
+
+`full_hash` used a 1 MiB stack array and overflowed the default Windows
+thread stack (`janus identify` / full `scan`). Fixed: heap `Vec`.
+
+Date filled: 2026-08-19  Machine: Chace (Windows)

@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Janus</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="top">
+    <a class="mark" href="/" data-link>Janus</a>
+    <nav>
+      <a href="/" data-link>Home</a>
+      <a href="/library" data-link>Library</a>
+      <a href="/unknown" data-link>Unknown</a>
+      <a href="/wanted" data-link>Wanted</a>
+      <a href="/storage" data-link>Storage</a>
+      <a href="/search" data-link>Search</a>
+      <a href="/settings" data-link>Settings</a>
+    </nav>
+    <button type="button" id="search-btn" title="Search (Ctrl/Cmd-K)">Search</button>
+  </header>
+  <main id="main">
+    <noscript>
+      <p>Add a folder you already keep models in. Janus will not move these files.</p>
+      <p>Enable JavaScript or use <code>janus root add</code> and <code>janus scan</code>.</p>
+    </noscript>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>

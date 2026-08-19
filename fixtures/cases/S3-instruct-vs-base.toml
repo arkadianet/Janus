@@ -1,0 +1,16 @@
+id = "S3"
+title = "Disagreeing known names stay two families"
+see = "docs/family-key-cases.md"
+
+[[files]]
+name = "Qwen3-30B-Instruct-Q4_K_M.gguf"
+known_basename = "Qwen3-30B-Instruct"
+
+[[files]]
+name = "Qwen3-30B-Base-Q4_K_M.gguf"
+known_basename = "Qwen3-30B-Base"
+
+[expect]
+family_count = 2
+silent_merge = false
+merge_suggestion = true

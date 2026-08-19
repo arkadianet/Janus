@@ -1,0 +1,17 @@
+id = "F3"
+title = "HF cache snapshot and renamed copy are one family"
+see = "docs/family-key-cases.md"
+
+[[files]]
+name = "hub/models--Qwen--Qwen3-8B/snapshots/abc123def/model.safetensors"
+same_blob = "hf"
+
+[[files]]
+name = "models/qwen3-8b-renamed.safetensors"
+same_blob = "hf"
+
+[expect]
+family_count = 1
+blob_count = 1
+file_count = 2
+provenance_files = ["hub/models--Qwen--Qwen3-8B/snapshots/abc123def/model.safetensors"]

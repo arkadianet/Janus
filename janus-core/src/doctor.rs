@@ -24,6 +24,76 @@ pub struct Suggestion {
     pub score: f64,
 }
 
+#[derive(Debug, Clone)]
+pub struct Finding {
+    pub code: String,
+    pub count: i64,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Report {
+    pub findings: Vec<Finding>,
+    pub suggestions: Vec<Suggestion>,
+}
+
+pub fn report(conn: &Connection) -> Report {
+    let mut findings = Vec::new();
+    push_count(
+        conn,
+        &mut findings,
+        "SELECT COUNT(*) FROM storage_roots WHERE present=0",
+        "root.not_found",
+        "offline or missing roots",
+    );
+    push_count(
+        conn,
+        &mut findings,
+        "SELECT COUNT(*) FROM storage_roots WHERE mount_id IS NULL",
+        "root.no_mount_id",
+        "roots without a volume UUID/serial",
+    );
+    push_count(
+        conn,
+        &mut findings,
+        "SELECT COUNT(*) FROM files WHERE hash_state != 'full'",
+        "hash.unverified",
+        "files not full-hashed",
+    );
+    push_count(
+        conn,
+        &mut findings,
+        "SELECT COUNT(*) FROM files WHERE parse_error='placeholder'",
+        "scan.placeholder",
+        "skipped unhydrated cloud placeholders",
+    );
+    let fetch_n: i64 = conn
+        .query_row("SELECT COUNT(*) FROM storage_roots WHERE kind='fetch'", [], |r| r.get(0))
+        .unwrap_or(0);
+    if fetch_n == 0 {
+        findings.push(Finding {
+            code: "root.not_writable".into(),
+            count: 1,
+            message: "no fetch root registered".into(),
+        });
+    }
+    Report {
+        findings,
+        suggestions: sweep(conn),
+    }
+}
+
+fn push_count(conn: &Connection, out: &mut Vec<Finding>, sql: &str, code: &str, message: &str) {
+    let n: i64 = conn.query_row(sql, [], |r| r.get(0)).unwrap_or(0);
+    if n > 0 {
+        out.push(Finding {
+            code: code.to_string(),
+            count: n,
+            message: message.to_string(),
+        });
+    }
+}
+
 pub fn sweep(conn: &Connection) -> Vec<Suggestion> {
     let mut fams = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
@@ -65,6 +135,9 @@ pub fn sweep(conn: &Connection) -> Vec<Suggestion> {
             if !arch_eq {
                 continue;
             }
+            if instruct_thinking_conflict(&fams[i].key, &fams[j].key) {
+                continue;
+            }
             let reason = if total_sim { "params" } else { "name" };
             out.push(Suggestion {
                 a_key: fams[i].key.clone(),
@@ -76,6 +149,16 @@ pub fn sweep(conn: &Connection) -> Vec<Suggestion> {
         }
     }
     out
+}
+
+fn name_has_token(key: &str, tok: &str) -> bool {
+    let name = key.split('|').next().unwrap_or(key);
+    name.split('-').any(|p| p.eq_ignore_ascii_case(tok))
+}
+
+fn instruct_thinking_conflict(a: &str, b: &str) -> bool {
+    (name_has_token(a, "instruct") && name_has_token(b, "thinking"))
+        || (name_has_token(a, "thinking") && name_has_token(b, "instruct"))
 }
 
 fn name_tokens(key: &str) -> Vec<String> {
@@ -107,10 +190,66 @@ mod tests {
     use super::*;
 
     #[test]
+    fn report_emits_stable_codes() {
+        use crate::{db, store};
+        let c = db::open(None).unwrap();
+        db::init_schema(&c).unwrap();
+        let dir = std::env::temp_dir().join(format!("janus-doc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let id = store::root_add_opts(&c, "models", dir.to_str().unwrap(), "internal", true).unwrap();
+        c.execute(
+            "INSERT INTO files (root_id, rel_path, size, mtime, ctime, dev, ino, is_symlink, hash_state, parse_state, state)
+             VALUES (?1,'a.gguf',1,0,0,0,1,0,'none','ok','present')",
+            [id],
+        )
+        .unwrap();
+        let r = report(&c);
+        assert!(r.findings.iter().any(|f| f.code == "hash.unverified"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn moe_vs_dense_similar_but_distinct() {
         let shared = name_similarity("qwen3-30b-a3b|qwen3|t30.5|a3.0", "qwen3-32b|qwen3|t32|a32").0;
         assert!(shared >= 1, "share a meaningful token");
         let s2 = name_similarity("foo-8b-instruct|qwen3|t8.0|a8.0", "bar-8b-instruct|qwen3|t8.0|a8.0").0;
         assert_eq!(s2, 0, "foo vs bar share nothing meaningful");
+    }
+
+    #[test]
+    fn kimi_instruct_vs_thinking_not_suggested() {
+        use crate::{db, store};
+        let c = db::open(None).unwrap();
+        db::init_schema(&c).unwrap();
+        store::family_insert(
+            &c,
+            "kimi-k2-instruct|unk|tunk|aunk",
+            Some("kimi-k2-instruct"),
+            Some("deepseek2"),
+            None,
+            None,
+            None,
+            "llm",
+        )
+        .unwrap();
+        store::family_insert(
+            &c,
+            "kimi-k2-thinking|unk|tunk|aunk",
+            Some("kimi-k2-thinking"),
+            Some("deepseek2"),
+            None,
+            None,
+            None,
+            "llm",
+        )
+        .unwrap();
+        let s = sweep(&c);
+        assert!(
+            !s.iter().any(|x| {
+                (x.a_key.contains("instruct") && x.b_key.contains("thinking"))
+                    || (x.a_key.contains("thinking") && x.b_key.contains("instruct"))
+            }),
+            "kimi instruct vs thinking must stay apart, got {s:?}"
+        );
     }
 }

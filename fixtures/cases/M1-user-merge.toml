@@ -1,0 +1,18 @@
+id = "M1"
+title = "User merge writes alias; rescan respects it"
+
+[[files]]
+name = "Foo-8B-Instruct-Q4_K_M.gguf"
+known_basename = "Foo-8B-Instruct"
+
+[[files]]
+name = "Bar-8B-Instruct-Q4_K_M.gguf"
+known_basename = "Bar-8B-Instruct"
+
+[given]
+merge = { src = "Foo-8B-Instruct", target = "Bar-8B-Instruct" }
+
+[expect]
+family_count = 1
+family_aliases_rows = 2
+export_includes = ["family_aliases"]

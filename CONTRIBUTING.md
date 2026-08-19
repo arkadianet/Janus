@@ -1,8 +1,7 @@
 # Contributing
 
-There is no implementation yet. Until Phase A exists, useful work is
-specs, fixtures, and golden-hoard notes — not drive-by refactors of
-DESIGN.md.
+Author: arkadianet. Implementation lives in `janus-core` (library) and
+`janus` (CLI + loopback daemon + bundled UI).
 
 ## Order of work
 
@@ -30,9 +29,15 @@ Do not send: downloaders, chat UIs, pickle loaders, trending pages.
 - Schema changes need a `schema_version` note and a migration story.
 - `family_key` is golden-tested. Changing it is a migration, not a tidy-up.
 
-## Code (when it exists)
+## Code
 
-- Rust for `janus-core` / CLI; Svelte 5 UI compiled at Janus build time.
+- Rust for `janus-core` / CLI; vanilla JS UI embedded at Janus build time.
 - `PRAGMA foreign_keys = ON` on every SQLite connection.
 - One writer: daemon if running, else CLI advisory lock.
 - Tests: family-key cases first, then scan fixtures, then CLI JSON goldens.
+- `cargo test --workspace` must stay green.
+
+```bash
+cargo test --workspace
+cargo build --release
+```

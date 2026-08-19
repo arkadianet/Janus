@@ -65,13 +65,14 @@ Reclaimable math: unique `(mount_id, dev, ino)`.
 ## Radar / Wanted (Phase C)
 
 Monitored families, last sweep, open / have-offline / fetched.
-Have-offline is not missing. Confirm fetch (D) is not auto.
+Have-offline is not missing. Privacy copy + confirm before sweep.
+Confirm fetch (D) is not auto; fetch only on an open wanted item with a digest.
 
 ## Chrome
 
 - Job/progress: scan, hash, later fetch (poll or SSE).
 - `doctor` warnings (placeholders, missing fetch root, no `mount_id`).
-- Settings: roots, cold, enrichment off-by-default, later profiles.
+- Settings: roots, cold, discover, export/import, doctor. Enrichment stays off until Sweep confirm.
 
 ## Accessibility / polish bar
 

@@ -1,0 +1,16 @@
+id = "U3"
+title = "Partial downloads are not models"
+see = "docs/family-key-cases.md"
+
+[[files]]
+name = "model.gguf.crdownload"
+parse_state = "partial"
+
+[[files]]
+name = "other.gguf.part"
+parse_state = "partial"
+
+[expect]
+family_count = 0
+parse_state = "partial"
+no_invented_family_name = true
