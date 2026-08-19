@@ -28,6 +28,22 @@ pub fn round1(v: f64) -> String {
     }
 }
 
+/// Header/shape counts are raw; catalogue params are billions (30.5).
+pub fn params_to_billions(n: f64) -> f64 {
+    if n.is_finite() && n >= 1_000_000.0 {
+        n / 1e9
+    } else {
+        n
+    }
+}
+
+pub fn format_params_b(total: Option<f64>) -> String {
+    match total {
+        Some(t) if t.is_finite() && t > 0.0 => format!("{:.1}B", params_to_billions(t)),
+        _ => "—".to_string(),
+    }
+}
+
 pub fn params_identity(total: Option<f64>, active: Option<f64>) -> String {
     let t = match total {
         Some(v) => format!("t{}", round1(v)),
@@ -104,17 +120,28 @@ pub fn identify(file: &str, parsed: &Parsed) -> Candidate {
         (display_name.clone(), display_name_level(parsed))
     };
 
+    // Shards: filename identity only. Do not treat one-shard shapes or file
+    // size as known family params.
+    let (params_total, params_active) = if role == Role::Shard {
+        (None, None)
+    } else {
+        (
+            parsed.params_total.as_ref().map(|f| Field {
+                value: params_to_billions(f.value),
+                level: f.level,
+            }),
+            parsed.params_active.as_ref().map(|f| Field {
+                value: params_to_billions(f.value),
+                level: f.level,
+            }),
+        )
+    };
+
     let family_key = if is_unknown {
         None
     } else {
-        let (total, active) = if role == Role::Shard {
-            (None, None)
-        } else {
-            (
-                parsed.params_total.as_ref().map(|f| f.value),
-                parsed.params_active.as_ref().map(|f| f.value),
-            )
-        };
+        let total = params_total.as_ref().map(|f| f.value);
+        let active = params_active.as_ref().map(|f| f.value);
         let arch = parsed.arch.as_ref().map(|f| f.value.as_str());
         Some(family_key(&name_for_key, arch, total, active))
     };
@@ -124,8 +151,8 @@ pub fn identify(file: &str, parsed: &Parsed) -> Candidate {
         format: parsed.format.clone(),
         display_name: Field { value: name_for_key, level: name_level },
         arch: parsed.arch.clone(),
-        params_total: parsed.params_total.clone(),
-        params_active: parsed.params_active.clone(),
+        params_total,
+        params_active,
         context_len: parsed.context_len.clone(),
         kind,
         quant,
@@ -142,5 +169,45 @@ fn display_name_level(parsed: &Parsed) -> Level {
         Level::Known
     } else {
         Level::Inferred
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parse::Parsed;
+
+    fn parsed_with_params(total: Option<f64>) -> Parsed {
+        Parsed {
+            format: Format::Safetensors,
+            general_name: None,
+            basename: None,
+            finetune: None,
+            arch: None,
+            params_total: total.map(Field::known),
+            params_active: None,
+            context_len: None,
+            file_type: None,
+            quant_from_header: None,
+            kind: None,
+            parse_error: None,
+        }
+    }
+
+    #[test]
+    fn params_display_is_human_not_raw_count() {
+        assert_eq!(format_params_b(Some(204712382976.0)), "204.7B");
+        assert_eq!(format_params_b(Some(8.0)), "8.0B");
+        assert_eq!(format_params_b(None), "—");
+        assert_eq!(format_params_b(Some(0.0)), "—");
+    }
+
+    #[test]
+    fn shard_does_not_invent_known_params() {
+        let parsed = parsed_with_params(Some(204712382976.0));
+        let c = identify("Kimi-K2-Instruct-00001-of-00010.safetensors", &parsed);
+        assert!(c.params_total.is_none(), "filename shards must not take params from shapes or byte size");
+        let key = c.family_key.expect("shard with a name is a family");
+        assert!(key.contains("tunk"), "shard family key must not invent params: {key}");
     }
 }

@@ -135,6 +135,9 @@ pub fn sweep(conn: &Connection) -> Vec<Suggestion> {
             if !arch_eq {
                 continue;
             }
+            if instruct_thinking_conflict(&fams[i].key, &fams[j].key) {
+                continue;
+            }
             let reason = if total_sim { "params" } else { "name" };
             out.push(Suggestion {
                 a_key: fams[i].key.clone(),
@@ -146,6 +149,16 @@ pub fn sweep(conn: &Connection) -> Vec<Suggestion> {
         }
     }
     out
+}
+
+fn name_has_token(key: &str, tok: &str) -> bool {
+    let name = key.split('|').next().unwrap_or(key);
+    name.split('-').any(|p| p.eq_ignore_ascii_case(tok))
+}
+
+fn instruct_thinking_conflict(a: &str, b: &str) -> bool {
+    (name_has_token(a, "instruct") && name_has_token(b, "thinking"))
+        || (name_has_token(a, "thinking") && name_has_token(b, "instruct"))
 }
 
 fn name_tokens(key: &str) -> Vec<String> {
@@ -201,5 +214,42 @@ mod tests {
         assert!(shared >= 1, "share a meaningful token");
         let s2 = name_similarity("foo-8b-instruct|qwen3|t8.0|a8.0", "bar-8b-instruct|qwen3|t8.0|a8.0").0;
         assert_eq!(s2, 0, "foo vs bar share nothing meaningful");
+    }
+
+    #[test]
+    fn kimi_instruct_vs_thinking_not_suggested() {
+        use crate::{db, store};
+        let c = db::open(None).unwrap();
+        db::init_schema(&c).unwrap();
+        store::family_insert(
+            &c,
+            "kimi-k2-instruct|unk|tunk|aunk",
+            Some("kimi-k2-instruct"),
+            Some("deepseek2"),
+            None,
+            None,
+            None,
+            "llm",
+        )
+        .unwrap();
+        store::family_insert(
+            &c,
+            "kimi-k2-thinking|unk|tunk|aunk",
+            Some("kimi-k2-thinking"),
+            Some("deepseek2"),
+            None,
+            None,
+            None,
+            "llm",
+        )
+        .unwrap();
+        let s = sweep(&c);
+        assert!(
+            !s.iter().any(|x| {
+                (x.a_key.contains("instruct") && x.b_key.contains("thinking"))
+                    || (x.a_key.contains("thinking") && x.b_key.contains("instruct"))
+            }),
+            "kimi instruct vs thinking must stay apart, got {s:?}"
+        );
     }
 }

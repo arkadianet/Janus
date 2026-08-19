@@ -374,10 +374,7 @@ fn cmd_list(conn: &Connection, args: &[String]) -> i32 {
         } else {
             raw.to_string()
         };
-        let params = match f.params_total {
-            Some(t) => format!("{:>5.1}B", t),
-            None => "—".to_string(),
-        };
+        let params = identity::format_params_b(f.params_total);
         let roots: Vec<String> = f
             .roots
             .iter()

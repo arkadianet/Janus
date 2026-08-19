@@ -21,7 +21,8 @@ pub fn full_hash(path: &Path) -> std::io::Result<(String, String, u64, u64)> {
     let mut hasher = blake3::Hasher::new();
     let mut sha = Sha256::new();
     let mut size = 0u64;
-    let mut buf = [0u8; 1024 * 1024];
+    // Heap: a 1 MiB stack array overflows the default Windows thread stack.
+    let mut buf = vec![0u8; 1024 * 1024];
     let mut head = Vec::with_capacity(PARTIAL_BYTES);
     let mut tail = Vec::with_capacity(PARTIAL_BYTES * 2);
     let mut small = Vec::new();

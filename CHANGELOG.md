@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- GGUF parse skips large tokenizer/tokens/scores arrays instead of
+  aborting the header, so Ollama blobs and Kimi shards still yield
+  architecture, basename, and file_type.
+- `janus list` PARAMS is human (204.7B) or —; filename shards do not
+  invent known params from a shard's tensor count or file size.
+- `janus doctor` does not suggest merging instruct ↔ thinking families
+  (Kimi Instruct and Thinking stay apart).
+- `full_hash` uses a heap buffer so `janus scan` / `identify` do not
+  overflow the default 1 MiB Windows thread stack.
 - Dedup / storage reclaimable groups by `(mount_id, dev, ino)`, not
   `(dev, ino)` alone across volumes.
 - `root add` refuses a volume with no UUID/serial unless `.janus-root`
